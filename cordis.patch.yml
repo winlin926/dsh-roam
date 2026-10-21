@@ -1,0 +1,4 @@
+# Load dsh-roam by package name. The host resolves that name to lib/index.js.
+- insert:
+    - id: dsh-roam
+      name: dsh-roam

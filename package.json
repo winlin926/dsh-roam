@@ -1,0 +1,68 @@
+{
+  "name": "dsh-roam",
+  "version": "0.1.0",
+  "description": "把电脑上的 DeepSeek Harness 会话漫游到手机：扫码即可在手机浏览器继续当前对话，同一 Wi-Fi 内直连，也能通过公网入口在外远程访问，无需安装 App。",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "roam",
+    "phone",
+    "mobile",
+    "qr",
+    "pairing",
+    "remote",
+    "手机扫码",
+    "手机继续会话",
+    "远程访问"
+  ],
+  "files": [
+    "lib/**/*.js",
+    "assets",
+    "cordis.patch.yml",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
+    "build": "pnpm clean && tsc -p tsconfig.json",
+    "test": "pnpm build && vitest run",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4",
+    "ws": "8.18.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.1",
+    "@deepseek-ai/dsh-client-locale": ">=0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-runtime": ">=0.1.1-rc.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "^8.18.2",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  }
+}

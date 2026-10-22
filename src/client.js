@@ -679,9 +679,11 @@ window.__ModuleLoader__.load({
                   { className: 'dshp_checkState' + (certificateExpired ? ' dshp_danger' : '') },
                   certificateExpired
                     ? '证书已过期'
-                    : typeof certificate.expiresAt === 'number'
-                      ? '证书有效至 ' + formatTime(certificate.expiresAt)
-                      : '未申请证书',
+                    : certificate.selfSigned === true
+                      ? '只有 frpc 自签证书'
+                      : typeof certificate.expiresAt === 'number'
+                        ? '证书有效至 ' + formatTime(certificate.expiresAt)
+                        : '未申请证书',
                 ),
                 h('span', { className: 'dshp_note' }, certificate.pending ? '正在签发…' : '经 80 端口隧道自动续期'),
                 h(
@@ -701,7 +703,7 @@ window.__ModuleLoader__.load({
                         '正在申请证书，稍后在这里看结果。',
                       ),
                   },
-                  typeof certificate.expiresAt === 'number' ? '立即续期' : '申请证书',
+                  typeof certificate.expiresAt === 'number' && certificate.selfSigned !== true ? '立即续期' : '申请证书',
                 ),
               )
             : null,

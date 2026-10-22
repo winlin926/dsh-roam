@@ -21,6 +21,8 @@ export interface CertificateStatus {
   keyPath?: string
   expiresAt?: number
   renewAt?: number
+  /** frpc 生成的占位自签证书：有效期再长也不算「已签发」。 */
+  selfSigned: boolean
   pending: boolean
   error?: string
 }
@@ -48,11 +50,18 @@ export interface CertificateManager {
   stop(): void
 }
 
-/** 读一张 PEM 证书的到期时间；文件缺失或解析失败都返回 undefined。 */
-export async function readCertificateExpiry(path: string): Promise<number | undefined> {
+export interface DeployedCertificate {
+  expiresAt: number
+  selfSigned: boolean
+}
+
+/** 读工作目录里现有的证书；文件缺失或解析失败都返回 undefined。 */
+export async function readDeployedCertificate(path: string): Promise<DeployedCertificate | undefined> {
   try {
-    const pem = await readFile(path, 'utf8')
-    return Date.parse(new X509Certificate(pem).validTo) || undefined
+    const certificate = new X509Certificate(await readFile(path, 'utf8'))
+    const expiresAt = Date.parse(certificate.validTo) || undefined
+    if (!expiresAt) return undefined
+    return { expiresAt, selfSigned: certificate.issuer === certificate.subject }
   } catch {
     return undefined
   }
@@ -72,13 +81,14 @@ export function createCertificateManager(options: CertificateManagerOptions): Ce
 
   async function status(): Promise<CertificateStatus> {
     const domain = options.domain()
-    if (!domain) return { pending, ...(lastError ? { error: lastError } : {}) }
+    if (!domain) return { selfSigned: false, pending, ...(lastError ? { error: lastError } : {}) }
     const target = paths(domain)
-    const expiresAt = await readCertificateExpiry(target.certificatePath)
+    const deployed = await readDeployedCertificate(target.certificatePath)
     return {
       domain,
       ...target,
-      ...(expiresAt ? { expiresAt, renewAt: expiresAt - RENEW_BEFORE_MS } : {}),
+      ...(deployed ? { expiresAt: deployed.expiresAt, renewAt: deployed.expiresAt - RENEW_BEFORE_MS } : {}),
+      selfSigned: deployed?.selfSigned === true,
       pending,
       ...(lastError ? { error: lastError } : {})
     }
@@ -88,7 +98,7 @@ export function createCertificateManager(options: CertificateManagerOptions): Ce
     const domain = options.domain()
     if (!domain) throw new Error('还没有配置固定公网域名。')
     const current = await status()
-    if (current.expiresAt && current.expiresAt - now() > RENEW_BEFORE_MS) return current
+    if (!current.selfSigned && current.expiresAt && current.expiresAt - now() > RENEW_BEFORE_MS) return current
     pending = true
     try {
       const issued = options.issue

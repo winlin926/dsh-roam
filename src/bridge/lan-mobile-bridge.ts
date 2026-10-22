@@ -24,6 +24,7 @@ import {
   renderPairingPinPage
 } from './lan-mobile-pages.js'
 import type { PairingPinState, PairingPinStore } from './pairing-pin-store.js'
+import { isMobileApiPath, proxyMobileApi } from './mobile-api-proxy.js'
 
 const MAX_BODY_BYTES = 64 * 1024
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -764,6 +765,32 @@ export class LanMobileBridge {
         ? normalizeRemoteAddress(forwardedAddress)
         : transportAddress
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
+
+    // The dsh-mobile API lives on the Harness and authenticates with its own
+    // device credential; the phone app calls it through this same public entry,
+    // so it bypasses the pairing gate. Nothing else is relayed.
+    if (isMobileApiPath(url.pathname)) {
+      response.removeHeader('content-security-policy')
+      response.removeHeader('x-frame-options')
+      const base = this.options.harnessUrl()
+      return proxyMobileApi({
+        request,
+        response,
+        url,
+        upstreamBase: base,
+        ...(base === undefined
+          ? {}
+          : {
+              session: {
+                cookie: () => this.harnessSession(base),
+                refresh: () => {
+                  this.harnessCookie = undefined
+                  return this.harnessSession(base)
+                }
+              }
+            })
+      })
+    }
 
     if (request.method === 'GET' && url.pathname.startsWith('/brand-logo/')) {
       const variant = url.pathname === '/brand-logo/dark' ? 'dark' : 'light'

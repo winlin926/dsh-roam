@@ -32,7 +32,7 @@
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
-    "build": "pnpm clean && tsc -p tsconfig.json",
+    "build": "pnpm clean && tsc -p tsconfig.json && node scripts/copy-browser-client.mjs",
     "test": "pnpm build && vitest run",
     "prepack": "pnpm build"
   },

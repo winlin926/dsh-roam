@@ -13,6 +13,7 @@ import {
   preferredLanAddress,
   resolveDefaultRouteAddress
 } from '../lib/bridge/lan-mobile-bridge.js'
+import type { MobileApiHost } from '../lib/bridge/mobile-api-host.js'
 
 const bridges: LanMobileBridge[] = []
 const servers: ReturnType<typeof createServer>[] = []
@@ -1195,6 +1196,36 @@ describe('LAN mobile bridge user questions', () => {
         }
       }
     ])
+  })
+})
+
+describe('AI-HUB pairing entry', () => {
+  it.each(['/__lan_pair', '/pair'])('routes %s to the mobile API pair route', async (path) => {
+    const seen: string[] = []
+    const mobileApi: MobileApiHost = {
+      available: true,
+      handle: async (request, response, pathname) => {
+        seen.push(`${request.method} ${pathname}`)
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ ok: true }))
+        return true
+      },
+      handleUpgrade: () => false,
+      close: () => {}
+    }
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => 'http://127.0.0.1:9999',
+      mobileApi
+    })
+    bridges.push(bridge)
+    const snapshot = await bridge.start()
+    const response = await fetch(`http://127.0.0.1:${snapshot.port}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: '051109' })
+    })
+    expect(response.status).toBe(200)
+    expect(seen).toEqual(['POST /api/mobile/v1/pair'])
   })
 })
 

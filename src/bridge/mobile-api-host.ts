@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
 
 export const MOBILE_API_PREFIX = '/api/mobile'
-const MOBILE_API_V1_PREFIX = '/api/mobile/v1'
+export const MOBILE_API_V1_PREFIX = '/api/mobile/v1'
 
 const require = createRequire(import.meta.url)
 
@@ -57,7 +57,7 @@ export interface MobileApiHostOptions {
 export interface MobileApiHost {
   readonly available: boolean
   readonly error?: string
-  handle(request: IncomingMessage, response: ServerResponse): Promise<boolean>
+  handle(request: IncomingMessage, response: ServerResponse, pathname?: string): Promise<boolean>
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean
   close(): void
 }
@@ -206,8 +206,11 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     }
   }
 
-  async handle(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
-    const pathname = requestPath(request)
+  async handle(
+    request: IncomingMessage,
+    response: ServerResponse,
+    pathname = requestPath(request)
+  ): Promise<boolean> {
     if (!isMobileApiPath(pathname)) return false
     if (this.closed) {
       writeJson(response, 503, { ok: false, error: { code: 'unavailable', message: '移动 API 已关闭' } })

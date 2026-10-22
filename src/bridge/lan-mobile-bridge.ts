@@ -24,7 +24,7 @@ import {
   renderPairingPinPage
 } from './lan-mobile-pages.js'
 import type { PairingPinState, PairingPinStore } from './pairing-pin-store.js'
-import { isMobileApiPath, type MobileApiHost } from './mobile-api-host.js'
+import { isMobileApiPath, MOBILE_API_V1_PREFIX, type MobileApiHost } from './mobile-api-host.js'
 
 const MAX_BODY_BYTES = 64 * 1024
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -38,6 +38,12 @@ const MUX_RECONNECT_CAP_MS = 30_000
 
 /** Gateway stream carrier: one WebSocket multiplexing every logical stream. */
 const REMOTE_STREAM_MUX_PATH = '/api/remote.mux'
+
+/**
+ * AI-HUB 的配对端点：直连模式打插件局域网代理那套 `/__lan_pair`，
+ * 中转模式打 `/pair`。两种都归到移动 API 的配对路由。
+ */
+const AI_HUB_PAIR_PATHS = new Set(['/__lan_pair', '/pair'])
 /** Gateway-internal stream delivering forwarded Cordis events. */
 const REMOTE_EVENT_STREAM_ENDPOINT = '$events'
 /** Gateway-internal unary endpoint settling one forwarded event. */
@@ -784,6 +790,21 @@ export class LanMobileBridge {
         ? normalizeRemoteAddress(forwardedAddress)
         : transportAddress
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
+
+    // AI-HUB 的配对端点。公网入口和局域网入口是同一台宿主的同一件事，交给移动 API 的
+    // 配对路由；落到下面的浏览器配对闸门只会拿到 401 文本。
+    if (request.method === 'POST' && AI_HUB_PAIR_PATHS.has(url.pathname)) {
+      response.removeHeader('content-security-policy')
+      response.removeHeader('x-frame-options')
+      if (!this.options.mobileApi) {
+        return this.json(response, 503, {
+          ok: false,
+          error: 'AI-HUB mobile API is unavailable.'
+        })
+      }
+      await this.options.mobileApi.handle(request, response, `${MOBILE_API_V1_PREFIX}/pair`)
+      return
+    }
 
     // AI-HUB speaks its own protocol with a device credential. It reaches the
     // embedded mobile API through the same public entry as the browser page,

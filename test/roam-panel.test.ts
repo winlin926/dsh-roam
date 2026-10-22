@@ -208,6 +208,14 @@ describe('phone bridge settings panel', () => {
     ])
   })
 
+  it('prints the panel version and refresh clock so a stale page is obvious', () => {
+    const now = Date.now()
+    const panel = render(statePayload({ version: '0.2.1', now }))
+    expect(textOf(panel)).toContain('面板 v0.2.1')
+    const stale = render(statePayload({ version: null, now: null }))
+    expect(textOf(stale)).toContain('页面可能是旧缓存')
+  })
+
   it('shows the certificate row with an issue button once the public URL is fixed', () => {
     const panel = render(
       statePayload({

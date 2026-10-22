@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import net from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -20,6 +20,13 @@ import {
 export const name = 'dsh-roam'
 export const inject = ['webServer', 'connection', 'sessions', 'typertGateway']
 
+const PLUGIN_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+  } catch {
+    return undefined
+  }
+})()
 const PORT_START = 43128
 const PUBLIC_URL_PROBE_TIMEOUT_MS = 12000
 const DATA_DIR = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dsh-roam')
@@ -207,6 +214,8 @@ function idleState(publicUrl = null, lastPublicUrlCheck = null, expectedPort = P
     expiresAt: null,
     devices: [],
     certificate: null,
+    version: PLUGIN_VERSION,
+    now: Date.now(),
     publicUrl,
     publicUrlConfigured: publicUrl !== null,
     mode: publicUrl ? 'fixed' : 'lan',
@@ -260,6 +269,8 @@ async function bridgeState(bridge, runtime) {
     expiresAt: snapshot.expiresAt ?? null,
     devices: runtime?.devices?.() ?? [],
     certificate: runtime?.certificate ? await runtime.certificate() : null,
+    version: PLUGIN_VERSION,
+    now: Date.now(),
     publicUrl,
     publicUrlConfigured: publicUrl !== null,
     mode: publicUrl ? 'fixed' : snapshot.tunnelActive === true ? 'tunnel' : 'lan',

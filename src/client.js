@@ -177,18 +177,12 @@ window.__ModuleLoader__.load({
       expectedPort: 43128,
       portMatchesTunnel: true,
       lastPublicUrlCheck: null,
+      devices: [],
+      certificate: null,
+      version: null,
+      now: null,
     }
-    const STATE_KEYS = Object.keys(IDLE)
     const PROVIDER_LABELS = { cloudflare: 'Cloudflare', pinggy: 'Pinggy' }
-
-    function mergeState(current, payload) {
-      if (!payload || typeof payload !== 'object') return current
-      const next = { ...current }
-      for (const key of STATE_KEYS) {
-        if (Object.prototype.hasOwnProperty.call(payload, key)) next[key] = payload[key]
-      }
-      return next
-    }
 
     function formatTime(value) {
       if (typeof value !== 'number' || !Number.isFinite(value)) return '未知'
@@ -252,7 +246,8 @@ window.__ModuleLoader__.load({
             const response = await fetch(STATE_URL, { cache: 'no-store', credentials: 'same-origin' })
             if (!alive || response.ok === false) return
             const payload = await response.json()
-            if (alive) setState((current) => mergeState(current, payload))
+            // 整份替换：面板只渲染服务端状态，任何字段白名单都会让新字段永远进不来。
+            if (alive) setState({ ...IDLE, ...payload })
           } catch {
             // The bridge route is not listening yet; the next poll retries.
           }
@@ -308,7 +303,7 @@ window.__ModuleLoader__.load({
             body: JSON.stringify(body ?? {}),
           })
           const payload = await response.json().catch(() => null)
-          if (payload && (payload.ok === true || payload.ready === true)) setState((current) => mergeState(current, payload))
+          if (payload && (payload.ok === true || payload.ready === true)) setState({ ...IDLE, ...payload })
           if (response.ok === false || !payload || payload.ok !== true) {
             const reason = payload && typeof payload.error === 'string' && payload.error ? payload.error : 'HTTP ' + (response.status || '?')
             markError(card, failureLabel + '：' + reason)
@@ -448,6 +443,13 @@ window.__ModuleLoader__.load({
                 ),
               ),
               h('p', { className: 'dshp_subtitle' }, '手机扫码即可继续当前会话。'),
+              h(
+                'p',
+                { className: 'dshp_note', 'data-role': 'panel-version' },
+                state.version
+                  ? '面板 v' + state.version + ' · 数据 ' + formatClock(state.now)
+                  : '面板版本未知，页面可能是旧缓存',
+              ),
             ),
             h(
               'div',

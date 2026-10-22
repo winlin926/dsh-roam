@@ -170,7 +170,7 @@ describe('phone bridge settings panel', () => {
     expect(elements(panel).some((element) => element.type === 'iframe')).toBe(false)
   })
 
-  it('lists paired devices with their source IP and region', () => {
+  it('lists paired devices with their online state, source IP and region', () => {
     const panel = render(
       statePayload({
         devices: [
@@ -182,6 +182,15 @@ describe('phone bridge settings panel', () => {
             region: '中国 浙江省 杭州市',
             firstSeenAt: 1,
             lastSeenAt: Date.now(),
+            online: true,
+          },
+          {
+            deviceId: 'device-2',
+            name: 'iPhone 16',
+            platform: 'ios',
+            firstSeenAt: 2,
+            lastSeenAt: Date.now(),
+            online: false,
           },
         ],
       }),
@@ -190,7 +199,13 @@ describe('phone bridge settings panel', () => {
     expect(text).toContain('已连接设备')
     expect(text).toContain('Xiaomi 15（android）')
     expect(text).toContain('223.5.5.5 · 中国 浙江省 杭州市')
-    expect(text).toContain('1 台')
+    expect(text).toContain('经隧道转发，看不到手机 IP')
+    expect(text).toContain('1 在线 / 2 台')
+    const dots = elements(panel).filter((element) => String(element.props.className ?? '').includes('dshp_deviceDot'))
+    expect(dots.map((element) => element.props.className)).toEqual([
+      'dshp_deviceDot dshp_deviceDotOnline',
+      'dshp_deviceDot',
+    ])
   })
 
   it('renders the six cards and the header pill for the ready state', () => {

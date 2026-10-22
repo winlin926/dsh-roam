@@ -69,6 +69,8 @@ export interface MobileApiHost {
   readonly error?: string
   handle(request: IncomingMessage, response: ServerResponse, pathname?: string): Promise<boolean>
   revokeDevice(deviceId: string): number
+  /** 当前握着事件流长连接的设备；手机断网、退后台都会立刻消失。 */
+  onlineDeviceIds(): ReadonlySet<string>
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean
   close(): void
 }
@@ -166,6 +168,8 @@ class EmbeddedMobileApiHost implements MobileApiHost {
   private readonly credentials: UpstreamCredentials
   private readonly presentedCredential: (request: IncomingMessage) => string | null
   private closed = false
+  /** 设备 → 它当前打开的事件流连接数。 */
+  private readonly streamingDevices = new Map<string, number>()
 
   constructor(private readonly options: MobileApiHostOptions) {
     const upstream = loadUpstream()
@@ -279,6 +283,7 @@ class EmbeddedMobileApiHost implements MobileApiHost {
       writeJson(response, 404, { ok: false, error: { code: 'not-found', message: '移动 API 路径不存在' } })
       return true
     }
+    if (pathname === `${MOBILE_API_V1_PREFIX}/events/stream`) this.trackDeviceStream(request, response)
     await handler(request, response)
     return true
   }
@@ -288,12 +293,37 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     const devices = this.options.devices
     if (!devices) return
     if (pathname === `${MOBILE_API_V1_PREFIX}/health` || pathname === `${MOBILE_API_V1_PREFIX}/pair`) return
-    const credential = this.presentedCredential(request)
-    if (!credential) return
-    const record = this.credentials.lookup(credential, String(this.state.instanceId ?? ''))
-    const deviceId = record && typeof record.deviceId === 'string' ? record.deviceId : ''
+    const deviceId = this.deviceIdFor(request)
     if (!deviceId) return
     devices.noteActivity(deviceId, clientAddress(request))
+  }
+
+  /** 请求携带的设备凭据对应的设备；健康检查这类匿名请求没有设备。 */
+  private deviceIdFor(request: IncomingMessage): string | undefined {
+    const credential = this.presentedCredential(request)
+    if (!credential) return undefined
+    const record = this.credentials.lookup(credential, String(this.state.instanceId ?? ''))
+    const deviceId = record && typeof record.deviceId === 'string' ? record.deviceId : ''
+    return deviceId || undefined
+  }
+
+  /**
+   * 手机在线 = 它握着事件流的长连接。凭据在请求头上，先解析设备再挂到响应关闭：
+   * 切网、退后台、杀进程都会走到 close，所以这里得到的是当下真实的在线集合。
+   */
+  private trackDeviceStream(request: IncomingMessage, response: ServerResponse): void {
+    const deviceId = this.deviceIdFor(request)
+    if (!deviceId) return
+    this.streamingDevices.set(deviceId, (this.streamingDevices.get(deviceId) ?? 0) + 1)
+    response.once('close', () => {
+      const remaining = (this.streamingDevices.get(deviceId) ?? 0) - 1
+      if (remaining > 0) this.streamingDevices.set(deviceId, remaining)
+      else this.streamingDevices.delete(deviceId)
+    })
+  }
+
+  onlineDeviceIds(): ReadonlySet<string> {
+    return new Set(this.streamingDevices.keys())
   }
 
   revokeDevice(deviceId: string): number {
@@ -313,6 +343,7 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     this.closed = true
     this.routes.clear()
     this.upgrades.clear()
+    this.streamingDevices.clear()
     try {
       this.preview.close()
     } catch {
@@ -346,6 +377,7 @@ function unavailableHost(error: unknown, options: MobileApiHostOptions): MobileA
   return {
     available: false,
     error: message,
+    onlineDeviceIds: () => new Set<string>(),
     revokeDevice: () => 0,
     async handle(request, response) {
       if (!isMobileApiPath(requestPath(request))) return false

@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
-import { LanMobileBridge } from './bridge/lan-mobile-bridge.js'
+import { LanMobileBridge, isPrivateAddress } from './bridge/lan-mobile-bridge.js'
 import { createMobileApiHost } from './bridge/mobile-api-host.js'
 import { createMobileDeviceRegistry } from './bridge/mobile-device-registry.js'
 import { createIpRegionResolver, ipRegionDirectory } from './bridge/ip-region.js'
@@ -50,6 +50,16 @@ function ensureIpRegionInstalled() {
   if (ipRegionInstallStarted) return
   ipRegionInstallStarted = true
   void ipRegion.ensureInstalled().catch(() => undefined)
+}
+
+/**
+ * 只有公网地址才查归属地：经隧道转发时本机看到的是 127.0.0.1，局域网直连看到的是内网地址，
+ * 两者都不是手机的真实位置，留着只会误导人。
+ */
+function publicAddress(address) {
+  if (typeof address !== 'string') return undefined
+  const value = address.startsWith('::ffff:') ? address.slice(7) : address
+  return isPrivateAddress(value) ? undefined : value
 }
 
 function choosePort(start) {
@@ -460,6 +470,7 @@ export function apply(ctx, config = {}) {
   const holder = { bridge: undefined }
   const pinFile = config.pinFile ?? PIN_FILE
   const bridge = () => holder.bridge
+  const mobileApiHolder = { current: undefined }
   const settingsFile = config.settingsFile ?? SETTINGS_FILE
   const savedSettings = readBridgeSettings(settingsFile)
   const runtime = {
@@ -470,7 +481,16 @@ export function apply(ctx, config = {}) {
     devices: () => {
       const list = mobileDevices.list()
       if (list.some((device) => device.lastIp)) ensureIpRegionInstalled()
-      return list.map((device) => ({ ...device, region: ipRegion.describe(device.lastIp) }))
+      const online = mobileApiHolder.current?.onlineDeviceIds() ?? new Set()
+      return list.map((device) => {
+        const address = publicAddress(device.lastIp)
+        return {
+          ...device,
+          lastIp: address,
+          region: address ? ipRegion.describe(address) : undefined,
+          online: online.has(device.deviceId),
+        }
+      })
     },
   }
   const checkPublicUrl =
@@ -509,7 +529,6 @@ export function apply(ctx, config = {}) {
     return () => disposeRoute()
   }, 'dsh-roam desktop url')
 
-  const mobileApiHolder = { current: undefined }
   registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, (deviceId) => mobileApiHolder.current?.revokeDevice(deviceId) ?? 0)
 
   ctx.effect(() => {

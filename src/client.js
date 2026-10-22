@@ -65,6 +65,8 @@ window.__ModuleLoader__.load({
       '.dshp_deviceItem{align-items:flex-start;justify-content:space-between;padding:10px 12px;border:1px solid color-mix(in srgb, #4f7cff 12%, var(--dsw-alias-settings-card-stroke));border-radius:10px;background:color-mix(in srgb, #4f7cff 3%, var(--dsw-alias-settings-card-fill))}',
       '.dshp_deviceMain{display:flex;flex:1;flex-direction:column;gap:3px;min-width:0}',
       '.dshp_deviceName{overflow-wrap:anywhere;font-weight:600}',
+      '.dshp_deviceDot{display:inline-block;width:8px;height:8px;margin-right:7px;border-radius:50%;background:#9aa4b2;vertical-align:middle}',
+      '.dshp_deviceDotOnline{background:#22c55e}',
       '.dshp_detailsCard{padding:0}',
       '.dshp_details{padding:0}',
       '.dshp_detailsSummary{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:16px 20px;font-size:14px;line-height:20px;font-weight:600;cursor:pointer;list-style:none}',
@@ -911,6 +913,10 @@ window.__ModuleLoader__.load({
           if (platform) return '未命名手机（' + platform + '）'
           return '未命名手机 ' + String(device.deviceId || '').slice(0, 8)
         }
+        const onlineCount = deviceList.filter((device) => device.online === true).length
+        const deviceTag = onlineCount > 0
+          ? onlineCount + ' 在线 / ' + deviceList.length + ' 台'
+          : deviceList.length + ' 台'
         const devicesCard = h(
           'section',
           { className: 'dshp_card', 'data-card': 'devices' },
@@ -921,12 +927,12 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dshp_cardTitleRow' },
               h('h3', { className: 'dshp_cardTitle' }, '已连接设备'),
-              helpTip('每台手机各有一条设备凭据，可以同时在线；这里显示最后在线时间与来源 IP。'),
+              helpTip('每台手机各有一条设备凭据，可以同时在线；绿点表示它此刻正握着事件流。经隧道转发的连接看不到手机 IP。'),
             ),
             h(
               'span',
               { className: 'dshp_tag' + (deviceList.length === 0 ? ' dshp_tagMuted' : '') },
-              deviceList.length + ' 台',
+              deviceTag,
             ),
           ),
           deviceList.length === 0
@@ -941,11 +947,18 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { className: 'dshp_deviceMain' },
-                      h('span', { className: 'dshp_deviceName' }, deviceTitle(device)),
+                      h(
+                        'span',
+                        { className: 'dshp_deviceName' },
+                        h('span', { className: 'dshp_deviceDot' + (device.online === true ? ' dshp_deviceDotOnline' : '') }),
+                        deviceTitle(device),
+                      ),
                       h(
                         'span',
                         { className: 'dshp_note' },
-                        [device.lastIp || '未知 IP', device.region || '归属地未知'].join(' · '),
+                        device.lastIp
+                          ? [device.lastIp, device.region || '归属地未知'].join(' · ')
+                          : '经隧道转发，看不到手机 IP',
                       ),
                       h('span', { className: 'dshp_note' }, '最后在线：' + formatTime(device.lastSeenAt)),
                     ),

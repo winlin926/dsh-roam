@@ -39,16 +39,18 @@
 src/index.js        宿主入口：注册路由、启动手机桥接
 src/client.js       设置页「连接手机」面板（浏览器模块）
 src/bridge/*.ts     桥接实现：配对、手机页面、隧道、设置读写
-lib/                tsc 产物，git 忽略，不手改
+lib/                构建产物（tsc 编译 + client.js 原样复制），git 忽略，不手改
 test/               测试（引用 lib，即要发布的产物）
 ```
 
 ```bash
-pnpm build   # 清空 lib 后由 tsc 全量生成
+pnpm build   # 清空 lib，tsc 编译 src/，client.js 原样复制
 pnpm test    # 先 build，再跑全部测试
 ```
 
 约定：`src/` 是唯一源码；`lib/` 只由构建生成；测试跑构建产物，所以构建失败等于测试失败。
+
+`src/client.js` 由 DSH 当普通 `<script>` 加载，必须保持经典脚本：一旦被编译进 `export {}`，浏览器会直接抛 `Unexpected token 'export'`，设置页整块白屏。因此它不参与 tsc 编译，构建时原样复制，`test/browser-client.test.ts` 守住“产物与源码逐字节一致、且不含顶层模块语法”。
 
 ## 装进 DSH
 

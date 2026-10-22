@@ -20,7 +20,8 @@ window.__ModuleLoader__.load({
       '.dshp_subtitle{margin:5px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
       '.dshp_cardTitleRow{display:flex;align-items:center;gap:6px;min-width:0}',
       '.dshp_labelRow{display:flex;align-items:center;gap:6px;min-width:0}',
-      '.dshp_help{display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;width:16px;height:16px;border:1px solid color-mix(in srgb, #4f7cff 28%, var(--dsw-alias-settings-card-stroke));border-radius:50%;background:color-mix(in srgb, #4f7cff 8%, var(--dsw-alias-settings-card-fill));color:var(--dshp-accent);font-size:11px;line-height:1;font-weight:600;cursor:help;user-select:none}',
+      '.dshp_help{position:relative;display:inline-flex;flex:0 0 auto;align-items:center;justify-content:center;width:16px;height:16px;border:1px solid color-mix(in srgb, #4f7cff 28%, var(--dsw-alias-settings-card-stroke));border-radius:50%;background:color-mix(in srgb, #4f7cff 8%, var(--dsw-alias-settings-card-fill));color:var(--dshp-accent);font-size:11px;line-height:1;font-weight:600;cursor:help;user-select:none}',
+      '.dshp_help::after{content:"";position:absolute;inset:-8px}',
       '.dshp_help:hover,.dshp_help:focus-visible{border-color:var(--dshp-accent);background:var(--dshp-accent-soft);outline:none}',
       '.dshp_helpBubble{position:fixed;z-index:2147483000;box-sizing:border-box;max-width:320px;padding:9px 12px;border:1px solid color-mix(in srgb, #4f7cff 25%, var(--dsw-alias-settings-card-stroke, #d6deee));border-radius:10px;background:color-mix(in srgb, #4f7cff 8%, var(--dsw-alias-settings-card-fill, #ffffff));color:var(--dsw-alias-label-primary, #1f2430);font-size:12.5px;line-height:19px;font-weight:400;white-space:pre-line;text-align:left;box-shadow:0 12px 30px rgba(79,124,255,.18),0 2px 6px rgba(15,23,42,.08);pointer-events:none}',
       '.dshp_badges{display:flex;flex-wrap:wrap;align-items:center;gap:8px}',
@@ -38,19 +39,19 @@ window.__ModuleLoader__.load({
       '.dshp_valueRow{display:flex;align-items:center;gap:8px;min-width:0}',
       '.dshp_addr{box-sizing:border-box;flex:1;min-width:0;margin:0;padding:8px 11px;overflow-wrap:anywhere;border:1px solid color-mix(in srgb, #4f7cff 16%, var(--dsw-alias-settings-card-stroke));border-radius:9px;background:color-mix(in srgb, #4f7cff 6%, var(--dsw-alias-settings-card-fill));font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}',
       '.dshp_pin{margin:0;font:30px/1.15 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;letter-spacing:.14em}',
-      '.dshp_note{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
-      '.dshp_error{margin:0;font-size:12px;line-height:18px;color:var(--dshp-danger)}',
+      '.dshp_note{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere;min-width:0}',
+      '.dshp_error{margin:0;font-size:12px;line-height:18px;color:var(--dshp-danger);overflow-wrap:anywhere;min-width:0}',
       '.dshp_success{color:var(--dshp-success)}',
-      '.dshp_notice{margin:0;font-size:12px;line-height:18px;font-weight:600;color:var(--dshp-success)}',
+      '.dshp_notice{margin:0;font-size:12px;line-height:18px;font-weight:600;color:var(--dshp-success);overflow-wrap:anywhere;min-width:0}',
       '.dshp_danger{color:var(--dshp-danger)}',
-      '.dshp_warn{margin:0;padding:8px 10px;border-left:3px solid var(--dshp-danger);border-radius:8px;background:rgba(229,72,77,.08);font-size:12px;line-height:18px}',
-      '.dshp_button{box-sizing:border-box;height:34px;padding:0 14px;border:1px solid var(--dsw-alias-settings-card-stroke);border-radius:9px;background:var(--dsw-alias-settings-card-fill);color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;white-space:nowrap;cursor:pointer;transition:border-color .15s ease,background .15s ease,color .15s ease}',
+      '.dshp_warn{margin:0;padding:8px 10px;border-left:3px solid var(--dshp-danger);border-radius:8px;background:rgba(229,72,77,.08);font-size:12px;line-height:18px;overflow-wrap:anywhere;min-width:0}',
+      '.dshp_button{box-sizing:border-box;height:34px;min-height:34px;padding:0 14px;border:1px solid var(--dsw-alias-settings-card-stroke);border-radius:9px;background:var(--dsw-alias-settings-card-fill);color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;white-space:nowrap;cursor:pointer;transition:border-color .15s ease,background .15s ease,color .15s ease}',
       '.dshp_button:hover:not(:disabled){border-color:var(--dshp-accent);background:var(--dshp-accent-soft)}',
       '.dshp_button:focus-visible{outline:2px solid var(--dshp-accent);outline-offset:1px}',
       '.dshp_button:disabled{opacity:.5;cursor:not-allowed}',
       '.dshp_primary{border-color:var(--dshp-accent);background:var(--dshp-accent);color:#fff;font-weight:600}',
       '.dshp_primary:hover:not(:disabled){background:var(--dshp-accent);filter:brightness(.95)}',
-      '.dshp_copy{height:30px;padding:0 10px;font-size:12px}',
+      '.dshp_copy{height:32px;min-height:32px;padding:0 10px;font-size:12px}',
       '.dshp_button.dshp_success{color:var(--dshp-success);border-color:color-mix(in srgb, #16a34a 45%, var(--dsw-alias-settings-card-stroke))}',
       '.dshp_actions{display:flex;flex-wrap:wrap;gap:8px}',
       '.dshp_formRow{display:flex;flex-wrap:wrap;align-items:center;gap:8px}',
@@ -77,11 +78,11 @@ window.__ModuleLoader__.load({
       '.dshp_diagRow{display:grid;grid-template-columns:132px minmax(0,1fr);gap:4px 12px;align-items:center}',
       '.dshp_diagLabel{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
       '.dshp_diagValue{margin:0;overflow-wrap:anywhere;font:12px/18px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}',
-      '.dshp_link{font-size:13px;line-height:20px;color:var(--dshp-accent);font-weight:500;text-decoration:none;text-underline-offset:2px}',
+      '.dshp_link{display:inline-flex;align-items:center;min-height:32px;font-size:13px;line-height:20px;color:var(--dshp-accent);font-weight:500;text-decoration:none;text-underline-offset:2px}',
       '.dshp_link:hover{text-decoration:underline}',
       '.dshp_skeleton{min-height:96px;justify-content:center}',
       '.dshp_skeletonLine{width:44%;height:12px;border-radius:6px;background:var(--dsw-alias-settings-card-stroke);opacity:.55}',
-      '@media (max-width:640px){.dshp_qrLayout{justify-content:center}.dshp_qrDetails{width:100%;flex-basis:100%}.dshp_valueRow{align-items:stretch}.dshp_valueRow .dshp_button{height:auto}}',
+      '@media (max-width:640px){.dshp_qrLayout{justify-content:center}.dshp_qrDetails{width:100%;flex-basis:100%}.dshp_valueRow{align-items:stretch}.dshp_valueRow .dshp_button{height:auto;min-height:32px}}',
     ].join('\n')
     if (typeof document !== 'undefined') {
       const legacyStyle = document.querySelector('style[data-plugin-css="dsh-phone-bridge/settings.css"]')
@@ -108,6 +109,14 @@ window.__ModuleLoader__.load({
     const POLL_MS = 2000
     const NOTICE_MS = 4000
     const noticeTimers = new Map()
+    /** 面板单实例：请求序号防止旧轮询覆盖新状态。 */
+    let latestStateRequest = 0
+
+    function snapshotFingerprint(snapshot) {
+      if (!snapshot || typeof snapshot !== 'object') return ''
+      const { now, ...rest } = snapshot
+      return JSON.stringify({ ...rest, minute: typeof now === 'number' ? Math.floor(now / 60000) : null })
+    }
 
     function hideHelpBubble() {
       if (typeof document === 'undefined') return
@@ -168,6 +177,8 @@ window.__ModuleLoader__.load({
       tunnelError: null,
       pairingPin: null,
       pinConsent: false,
+      browserConnected: null,
+      onlineDeviceCount: null,
       pinExpiresAt: null,
       expiresAt: null,
       publicUrl: null,
@@ -204,6 +215,12 @@ window.__ModuleLoader__.load({
       }
     }
 
+    function formatRemaining(value, now) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return ''
+      const remaining = Math.max(0, Math.ceil((value - (typeof now === 'number' ? now : Date.now())) / 60000))
+      return remaining > 0 ? '约 ' + remaining + ' 分钟后失效' : '已失效，正在刷新'
+    }
+
     async function writeClipboard(value) {
       try {
         if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -238,18 +255,27 @@ window.__ModuleLoader__.load({
       const [errors, setErrors] = useState({})
       const [notices, setNotices] = useState({})
       const [copiedKey, setCopiedKey] = useState('')
+      const [pollError, setPollError] = useState('')
 
       useEffect(() => {
         let alive = true
         const load = async () => {
+          const request = ++latestStateRequest
           try {
             const response = await fetch(STATE_URL, { cache: 'no-store', credentials: 'same-origin' })
-            if (!alive || response.ok === false) return
+            if (!alive || request !== latestStateRequest) return
+            if (response.ok === false) {
+              setPollError('HTTP ' + (response.status || '?'))
+              return
+            }
             const payload = await response.json()
+            if (!alive || request !== latestStateRequest) return
+            setPollError('')
             // 整份替换：面板只渲染服务端状态，任何字段白名单都会让新字段永远进不来。
-            if (alive) setState({ ...IDLE, ...payload })
-          } catch {
-            // The bridge route is not listening yet; the next poll retries.
+            setState((current) => (snapshotFingerprint(current) === snapshotFingerprint(payload) ? current : { ...IDLE, ...payload }))
+          } catch (cause) {
+            if (!alive || request !== latestStateRequest) return
+            setPollError(cause instanceof Error ? cause.message : String(cause))
           }
         }
         void load()
@@ -291,6 +317,7 @@ window.__ModuleLoader__.load({
       const isBusy = (key) => busy[key] === true
 
       const perform = async (key, card, path, body, failureLabel, successMessage) => {
+        latestStateRequest += 1
         markBusy(key, true)
         markError(card, '')
         clearNotice(card)
@@ -303,7 +330,7 @@ window.__ModuleLoader__.load({
             body: JSON.stringify(body ?? {}),
           })
           const payload = await response.json().catch(() => null)
-          if (payload && (payload.ok === true || payload.ready === true)) setState({ ...IDLE, ...payload })
+          if (payload && payload.ready === true) setState({ ...IDLE, ...payload })
           if (response.ok === false || !payload || payload.ok !== true) {
             const reason = payload && typeof payload.error === 'string' && payload.error ? payload.error : 'HTTP ' + (response.status || '?')
             markError(card, failureLabel + '：' + reason)
@@ -337,12 +364,12 @@ window.__ModuleLoader__.load({
 
       const renderError = (card) => {
         const message = errors[card]
-        return message ? h('p', { className: 'dshp_error' }, message) : null
+        return message ? h('p', { className: 'dshp_error', role: 'alert' }, message) : null
       }
 
       const renderNotice = (card) => {
         const message = notices[card]
-        return message ? h('p', { className: 'dshp_notice', role: 'status' }, message) : null
+        return message ? h('p', { className: 'dshp_notice', role: 'status', 'aria-live': 'polite' }, message) : null
       }
 
       const copyButton = (key, card, value) =>
@@ -381,7 +408,14 @@ window.__ModuleLoader__.load({
       try {
         const lanUrls = Array.isArray(state.lanUrls) ? state.lanUrls.filter((url) => typeof url === 'string' && url.length > 0) : []
         const publicUrl = typeof state.publicUrl === 'string' && state.publicUrl.length > 0 ? state.publicUrl : ''
-        const publicUrlConfigured = state.publicUrlConfigured === true || publicUrl.length > 0 || state.mode === 'fixed'
+        const publicUrlConfigured = state.publicUrlConfigured === true || publicUrl.length > 0
+        const publicUrlHost = (() => {
+          try {
+            return publicUrl ? new URL(publicUrl).hostname.toLowerCase() : ''
+          } catch {
+            return ''
+          }
+        })()
         const tunnelUrl = typeof state.tunnelUrl === 'string' && state.tunnelUrl.length > 0 ? state.tunnelUrl : ''
         const pairingUrl = typeof state.pairingUrl === 'string' && state.pairingUrl.length > 0 ? state.pairingUrl : ''
         const publicAvailable = publicUrlConfigured || tunnelUrl.length > 0
@@ -394,19 +428,30 @@ window.__ModuleLoader__.load({
         const pin = state.pairingPin ? String(state.pairingPin) : '------'
         const lastCheck = state.lastPublicUrlCheck && typeof state.lastPublicUrlCheck === 'object' ? state.lastPublicUrlCheck : null
         const certificate = state.certificate && typeof state.certificate === 'object' ? state.certificate : null
+        const panelClock = typeof state.now === 'number' && Number.isFinite(state.now) ? state.now : Date.now()
         const certificateExpired =
-          certificate && typeof certificate.expiresAt === 'number' ? certificate.expiresAt <= Date.now() : false
+          certificate && typeof certificate.expiresAt === 'number' ? certificate.expiresAt <= panelClock : false
         const bridgePort = Number.isInteger(state.bridgePort) ? state.bridgePort : null
         const expectedPort = Number.isInteger(state.expectedPort) ? state.expectedPort : 43128
         const portMismatch = state.portMatchesTunnel === false || (bridgePort !== null && bridgePort !== expectedPort)
         const providerLabel = state.tunnelProvider ? PROVIDER_LABELS[state.tunnelProvider] ?? String(state.tunnelProvider) : '未开启'
         const draftValue = draftUrl === null ? publicUrl : draftUrl
+        const draftDirty = draftUrl !== null && draftUrl.trim() !== publicUrl
+        const deviceList = Array.isArray(state.devices) ? state.devices : []
+        const deviceOnlineCount = deviceList.filter((device) => device.online === true).length
+        const onlineDeviceCount = Number.isInteger(state.onlineDeviceCount)
+          ? Math.min(Math.max(state.onlineDeviceCount, deviceOnlineCount), deviceList.length)
+          : deviceOnlineCount
+        const browserConnected =
+          typeof state.browserConnected === 'boolean' ? state.browserConnected : state.connected === true
+        const hasPhoneConnection = browserConnected || onlineDeviceCount > 0
         const saveDisabled = isBusy('save')
         const testDisabled = isBusy('test')
         const rotateDisabled = isBusy('rotate')
         const disconnectDisabled = isBusy('disconnect')
         const tunnelDisabled = isBusy('tunnel') || state.tunnelLoading === true
         const fallbackDisabled = isBusy('fallback')
+        const certificateBusy = isBusy('certificate') || (certificate && certificate.pending === true)
         const helpTip = (text) =>
           h(
             'span',
@@ -446,9 +491,7 @@ window.__ModuleLoader__.load({
               h(
                 'p',
                 { className: 'dshp_note', 'data-role': 'panel-version' },
-                state.version
-                  ? '面板 v' + state.version + ' · 数据 ' + formatClock(state.now)
-                  : '面板版本未知，页面可能是旧缓存',
+                state.version ? '面板 v' + state.version : '面板版本未知，页面可能是旧缓存',
               ),
             ),
             h(
@@ -456,9 +499,15 @@ window.__ModuleLoader__.load({
               { className: 'dshp_badges' },
               h(
                 'span',
-                { className: 'dshp_pill' + (state.connected === true ? ' dshp_pillConnected dshp_success' : '') },
+                { className: 'dshp_pill' + (hasPhoneConnection ? ' dshp_pillConnected dshp_success' : '') },
                 h('span', { className: 'dshp_dot' }),
-                state.connected === true ? '手机已连接' : '等待连接',
+                browserConnected && onlineDeviceCount > 0
+                  ? '浏览器已连接 · App 在线'
+                  : browserConnected
+                    ? '浏览器已连接'
+                    : onlineDeviceCount > 0
+                      ? 'App 在线'
+                      : '等待连接',
               ),
             ),
           ),
@@ -497,6 +546,9 @@ window.__ModuleLoader__.load({
                   h('code', { className: 'dshp_addr' }, accessUrl || '暂无可用地址'),
                   copyButton('address', 'qr', accessUrl),
                 ),
+                state.expiresAt
+                  ? h('p', { className: 'dshp_note' }, '二维码' + formatRemaining(state.expiresAt, state.now))
+                  : null,
               ),
               publicAvailable
                 ? h(
@@ -514,6 +566,9 @@ window.__ModuleLoader__.load({
                       h('code', { className: 'dshp_pin' }, pin),
                       copyButton('pin', 'qr', state.pairingPin ? String(state.pairingPin) : ''),
                     ),
+                    state.pinConsent !== true && state.pinExpiresAt
+                      ? h('p', { className: 'dshp_note' }, '临时密码，' + formatRemaining(state.pinExpiresAt, state.now))
+                      : null,
                   )
                 : null,
               lanUrls.length > 0 && (publicAvailable || lanUrls.length > 1)
@@ -548,8 +603,21 @@ window.__ModuleLoader__.load({
                     ),
                   )
                 : null,
-              state.connected === true
-                ? h('p', { className: 'dshp_connectedText' }, '手机已连接，可继续使用')
+              hasPhoneConnection
+                ? h(
+                    'p',
+                    { className: 'dshp_connectedText' },
+                    browserConnected ? '浏览器已连接，可继续使用' : 'App 在线，可继续使用',
+                  )
+                : null,
+              onlineDeviceCount > 0
+                ? h(
+                    'p',
+                    { className: 'dshp_note' },
+                    browserConnected
+                      ? '另有 ' + onlineDeviceCount + ' 台 App 正在后台连接。'
+                      : 'App 正在后台连接；要永久断开，请在设备列表移除这台手机。',
+                  )
                 : null,
               h(
                 'div',
@@ -565,7 +633,7 @@ window.__ModuleLoader__.load({
                   },
                   rotateDisabled ? '正在重新生成…' : '重新生成二维码',
                 ),
-                state.connected === true
+                browserConnected
                   ? h(
                       'button',
                       {
@@ -573,9 +641,9 @@ window.__ModuleLoader__.load({
                         className: 'dshp_button',
                         'data-action': 'disconnect-qr',
                         disabled: disconnectDisabled,
-                        onClick: () => perform('disconnect', 'qr', DISCONNECT_URL, {}, '断开失败', '已断开手机连接。'),
+                        onClick: () => perform('disconnect', 'qr', DISCONNECT_URL, {}, '断开失败', '已断开手机网页。'),
                       },
-                      disconnectDisabled ? '正在断开…' : '断开手机',
+                      disconnectDisabled ? '正在断开…' : '断开手机网页',
                     )
                   : null,
               ),
@@ -661,7 +729,12 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'dshp_button',
                 'data-action': 'test',
-                disabled: testDisabled,
+                disabled: testDisabled || !publicUrlConfigured || draftDirty || isBusy('save'),
+                title: !publicUrlConfigured
+                  ? '先保存固定公网域名，才能检测连通性。'
+                  : draftDirty
+                    ? '先保存域名，再检测连通性。'
+                    : undefined,
                 onClick: () =>
                   perform('test', 'public', PUBLIC_URL_TEST_URL, {}, '检测失败', (payload) => {
                     const check = payload.lastPublicUrlCheck
@@ -694,7 +767,8 @@ window.__ModuleLoader__.load({
                     type: 'button',
                     className: 'dshp_button',
                     'data-action': 'issue-certificate',
-                    disabled: certificate.pending === true,
+                    disabled: certificateBusy,
+                    'aria-busy': certificateBusy ? 'true' : undefined,
                     onClick: () =>
                       perform(
                         'certificate',
@@ -705,12 +779,22 @@ window.__ModuleLoader__.load({
                         '正在申请证书，稍后在这里看结果。',
                       ),
                   },
-                  typeof certificate.expiresAt === 'number' && certificate.selfSigned !== true ? '立即续期' : '申请证书',
+                  certificateBusy
+                    ? typeof certificate.expiresAt === 'number' && certificate.selfSigned !== true
+                      ? '正在续期…'
+                      : '正在申请…'
+                    : typeof certificate.expiresAt === 'number' && certificate.selfSigned !== true
+                      ? '立即续期'
+                      : '申请证书',
                 ),
               )
             : null,
-          certificate && typeof certificate.error === 'string' && certificate.error
-            ? h('p', { className: 'dshp_error' }, '证书错误：' + certificate.error)
+          certificate &&
+          publicUrlConfigured &&
+          (!certificate.domain || certificate.domain === publicUrlHost) &&
+          typeof certificate.error === 'string' &&
+          certificate.error
+            ? h('p', { className: 'dshp_error', role: 'alert' }, '证书错误：' + certificate.error)
             : null,
           h(
             'div',
@@ -721,6 +805,8 @@ window.__ModuleLoader__.load({
                 className:
                   'dshp_checkState' +
                   (lastCheck ? (lastCheck.reachable === true ? ' dshp_success' : ' dshp_danger') : ''),
+                role: 'status',
+                'aria-live': 'polite',
               },
               lastCheck
                 ? lastCheck.reachable === true
@@ -738,7 +824,7 @@ window.__ModuleLoader__.load({
               : null,
           ),
           lastCheck && typeof lastCheck.error === 'string' && lastCheck.error
-            ? h('p', { className: 'dshp_error' }, '失败原因：' + lastCheck.error)
+            ? h('p', { className: 'dshp_error', role: 'alert' }, '失败原因：' + lastCheck.error)
             : null,
           renderError('public'),
           renderNotice('public'),
@@ -772,7 +858,7 @@ window.__ModuleLoader__.load({
                       },
                       tunnelDisabled ? '正在关闭…' : '关闭公网连接',
                     ),
-                state.tunnelProvider === 'cloudflare' && state.connected !== true
+                state.tunnelProvider === 'cloudflare' && !hasPhoneConnection
                   ? h(
                       'button',
                       {
@@ -793,7 +879,7 @@ window.__ModuleLoader__.load({
             ? h('p', { className: 'dshp_note' }, '隧道地址：' + tunnelUrl)
             : null,
           publicUrlConfigured ? null : state.tunnelError
-            ? h('p', { className: 'dshp_error' }, '隧道建立失败：' + state.tunnelError)
+            ? h('p', { className: 'dshp_error', role: 'alert' }, '隧道建立失败：' + state.tunnelError)
             : null,
         )
 
@@ -833,7 +919,9 @@ window.__ModuleLoader__.load({
                 placeholder: '例如 000000（留空则随机）',
                 value: pinDraftValue,
                 disabled: isBusy('pin'),
+                'aria-label': '固定连接密码',
                 'aria-invalid': pinDraftInvalid ? 'true' : 'false',
+                'aria-describedby': pinDraftInvalid ? 'dshp-pin-error' : undefined,
                 onChange: (event) => setDraftPin(String((event && event.target && event.target.value) || '').replace(/[^0-9]/g, '')),
               }),
               h(
@@ -844,7 +932,7 @@ window.__ModuleLoader__.load({
                   'data-action': 'save-pin',
                   disabled: isBusy('pin') || pinDraftInvalid,
                   onClick: async () => {
-                    await perform(
+                    const saved = await perform(
                       'pin',
                       'security',
                       PIN_URL,
@@ -852,14 +940,18 @@ window.__ModuleLoader__.load({
                       '保存连接密码失败',
                       (payload) => (payload.pinConsent === true ? '连接密码已保存，立即生效。' : '已恢复 5 分钟随机密码。'),
                     )
-                    setDraftPin(null)
+                    if (saved) setDraftPin(null)
                   },
                 },
                 isBusy('pin') ? '正在保存…' : '保存密码',
               ),
             ),
             pinDraftInvalid
-              ? h('p', { className: 'dshp_error' }, '连接密码必须是 6 位数字；AI-HUB 配对需要固定密码。')
+              ? h(
+                  'p',
+                  { className: 'dshp_error', id: 'dshp-pin-error', role: 'alert' },
+                  '连接密码必须是 6 位数字；AI-HUB 配对需要固定密码。',
+                )
               : null,
             state.pinConsent === true
               ? h(
@@ -924,6 +1016,12 @@ window.__ModuleLoader__.load({
                   state.tunnelError ? String(state.tunnelError) : '无',
                 ),
               ),
+              h(
+                'div',
+                { className: 'dshp_diagRow' },
+                h('span', { className: 'dshp_diagLabel' }, '面板数据'),
+                h('code', { className: 'dshp_diagValue' }, formatClock(state.now) || '未知'),
+              ),
               portMismatch
                 ? h(
                     'p',
@@ -950,7 +1048,6 @@ window.__ModuleLoader__.load({
           ),
         )
 
-        const deviceList = Array.isArray(state.devices) ? state.devices : []
         const deviceTitle = (device) => {
           const name = typeof device.name === 'string' ? device.name.trim() : ''
           const platform = typeof device.platform === 'string' ? device.platform.trim() : ''
@@ -959,10 +1056,11 @@ window.__ModuleLoader__.load({
           if (platform) return '未命名手机（' + platform + '）'
           return '未命名手机 ' + String(device.deviceId || '').slice(0, 8)
         }
-        const onlineCount = deviceList.filter((device) => device.online === true).length
-        const deviceTag = onlineCount > 0
-          ? onlineCount + ' 在线 / ' + deviceList.length + ' 台'
-          : deviceList.length + ' 台'
+        const deviceTag = onlineDeviceCount > 0
+          ? 'App 在线 ' + onlineDeviceCount + ' / 共 ' + deviceList.length + ' 台'
+          : deviceList.length > 0
+            ? '共 ' + deviceList.length + ' 台，App 均离线'
+            : '共 0 台'
         const devicesCard = h(
           'section',
           { className: 'dshp_card', 'data-card': 'devices' },
@@ -973,7 +1071,7 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dshp_cardTitleRow' },
               h('h3', { className: 'dshp_cardTitle' }, '已连接设备'),
-              helpTip('每台手机各有一条设备凭据，可以同时在线；绿点表示它此刻正握着事件流。经隧道转发的连接看不到手机 IP。'),
+              helpTip('每台手机各有一条设备凭据，可以同时在线；绿点表示 App 此刻正握着事件流。局域网直连或隧道转发时不展示来源 IP。'),
             ),
             h(
               'span',
@@ -1004,7 +1102,7 @@ window.__ModuleLoader__.load({
                         { className: 'dshp_note' },
                         device.lastIp
                           ? [device.lastIp, device.region || '归属地未知'].join(' · ')
-                          : '经隧道转发，看不到手机 IP',
+                          : '未记录公网 IP（局域网直连或经隧道转发）',
                       ),
                       h('span', { className: 'dshp_note' }, '最后在线：' + formatTime(device.lastSeenAt)),
                     ),
@@ -1014,6 +1112,7 @@ window.__ModuleLoader__.load({
                         type: 'button',
                         className: 'dshp_button',
                         'data-action': 'remove-device',
+                        disabled: isBusy('remove:' + device.deviceId),
                         onClick: () =>
                           perform(
                             'remove:' + device.deviceId,
@@ -1024,7 +1123,7 @@ window.__ModuleLoader__.load({
                             '设备已移除。',
                           ),
                       },
-                      '移除',
+                      isBusy('remove:' + device.deviceId) ? '移除中…' : '移除',
                     ),
                   ),
                 ),
@@ -1033,7 +1132,19 @@ window.__ModuleLoader__.load({
           renderNotice('devices'),
         )
 
-        return h('div', { className: 'dshp_root' }, header, publicCard, qrCard, devicesCard, securityCard, diagnosticsCard)
+        return h(
+          'div',
+          { className: 'dshp_root' },
+          header,
+          pollError
+            ? h('p', { className: 'dshp_warn', role: 'alert' }, '无法读取面板状态：' + pollError + '，正在重试…')
+            : null,
+          qrCard,
+          publicCard,
+          devicesCard,
+          securityCard,
+          diagnosticsCard,
+        )
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause)
         return h(

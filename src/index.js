@@ -29,13 +29,6 @@ const PLUGIN_VERSION = (() => {
 })()
 const PORT_START = 43128
 const PUBLIC_URL_PROBE_TIMEOUT_MS = 12000
-const DATA_DIR = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dsh-roam')
-const CACHE_DIR = join(DATA_DIR, 'bin')
-const PIN_FILE = join(DATA_DIR, 'mobile-pairing-pin.json')
-const DEVICES_FILE = join(DATA_DIR, 'mobile-devices.json')
-const SETTINGS_FILE = join(DATA_DIR, 'settings.json')
-const ACME_STATE_DIR = join(DATA_DIR, 'acme')
-const ACME_CHALLENGE_DIR = join(ACME_STATE_DIR, 'challenge')
 /** frpc 的工作目录：`<域名>.crt` / `<域名>.key` 放这里，隧道重启后生效。 */
 const FRPC_CERTIFICATE_DIR = join(
   process.env.ProgramData ?? 'C:\\ProgramData',
@@ -57,17 +50,6 @@ const TUNNEL_DISABLED_MESSAGE = '已配置固定公网域名，临时隧道已�
 /** Same SVG options the desktop page uses, so a QR that scans there scans here. */
 const QR_OPTIONS = { type: 'svg', margin: 1, width: 260 }
 const MAX_BODY_BYTES = 64 * 1024
-
-const mobileDevices = createMobileDeviceRegistry(DEVICES_FILE)
-const ipRegion = createIpRegionResolver(ipRegionDirectory(DATA_DIR))
-let ipRegionInstallStarted = false
-
-/** 有设备要查归属地时才下载离线库；没人连过就不该占这几十兆流量。 */
-function ensureIpRegionInstalled() {
-  if (ipRegionInstallStarted) return
-  ipRegionInstallStarted = true
-  void ipRegion.ensureInstalled().catch(() => undefined)
-}
 
 /**
  * 只有公网地址才查归属地：经隧道转发时本机看到的是 127.0.0.1，局域网直连看到的是内网地址，
@@ -203,6 +185,8 @@ function idleState(publicUrl = null, lastPublicUrlCheck = null, expectedPort = P
     lanUrls: [],
     desktopUrl: null,
     connected: false,
+    browserConnected: false,
+    onlineDeviceCount: 0,
     tunnelActive: false,
     tunnelLoading: false,
     tunnelProvider: null,
@@ -251,6 +235,8 @@ async function bridgeState(bridge, runtime) {
     if (snapshot.tunnelUrl && url.startsWith(snapshot.tunnelUrl)) return false
     return true
   })
+  const devices = runtime?.devices?.() ?? []
+  const onlineDeviceCount = devices.filter((device) => device.online === true).length
   return {
     ready: true,
     qrSvg: pairingUrl ? await QRCode.toString(pairingUrl, QR_OPTIONS) : null,
@@ -258,6 +244,8 @@ async function bridgeState(bridge, runtime) {
     lanUrls,
     desktopUrl: bridge.createDesktopUrl() ?? null,
     connected: snapshot.connected === true,
+    browserConnected: snapshot.connected === true,
+    onlineDeviceCount,
     tunnelActive: snapshot.tunnelActive === true,
     tunnelLoading: snapshot.tunnelLoading === true,
     tunnelProvider: snapshot.tunnelProvider ?? null,
@@ -267,7 +255,7 @@ async function bridgeState(bridge, runtime) {
     pinConsent: pins.pinConsent === true,
     pinExpiresAt: pins.pinExpiresAt ?? null,
     expiresAt: snapshot.expiresAt ?? null,
-    devices: runtime?.devices?.() ?? [],
+    devices,
     certificate: runtime?.certificate ? await runtime.certificate() : null,
     version: PLUGIN_VERSION,
     now: Date.now(),
@@ -397,8 +385,23 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevi
       return writeJson(response, 500, result(false, '保存设置失败：' + errorMessage(error), await state()))
     }
     const saved = readBridgeSettings(runtime.settingsFile)
-    if (runtime.publicUrl !== saved.publicUrl) runtime.lastPublicUrlCheck = null
+    const previousPublicUrl = runtime.publicUrl
+    if (previousPublicUrl !== saved.publicUrl) runtime.lastPublicUrlCheck = null
     runtime.publicUrl = saved.publicUrl
+    if (previousPublicUrl === null && saved.publicUrl !== null) {
+      const target = bridge()
+      if (target) {
+        try {
+          await target.toggleTunnel(false)
+        } catch (error) {
+          return writeJson(
+            response,
+            500,
+            result(false, '已保存固定域名，但关闭临时隧道失败：' + errorMessage(error), await state()),
+          )
+        }
+      }
+    }
     writeJson(response, 200, result(true, null, await state()))
   })
 
@@ -407,8 +410,9 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevi
       return writeJson(response, 400, result(false, '尚未配置公网域名。', await state()))
     }
     let lastPublicUrlCheck
+    const testedUrl = runtime.publicUrl
     try {
-      const probeResult = await checkPublicUrl(runtime.publicUrl)
+      const probeResult = await checkPublicUrl(testedUrl)
       lastPublicUrlCheck = {
         at: Date.now(),
         reachable: probeResult?.reachable === true,
@@ -417,6 +421,9 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevi
       }
     } catch (error) {
       lastPublicUrlCheck = { at: Date.now(), reachable: false, status: null, error: errorMessage(error) }
+    }
+    if (runtime.publicUrl !== testedUrl) {
+      return writeJson(response, 409, result(false, '公网域名已变更，请重新检测。', await state()))
     }
     runtime.lastPublicUrlCheck = lastPublicUrlCheck
     writeJson(response, 200, result(true, null, await state()))
@@ -436,10 +443,13 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevi
     const target = bridge()
     if (!target) return unavailable(response)
     const body = await readJsonBody(request)
-    const enabled = typeof body?.enabled === 'boolean' ? body.enabled : undefined
+    if (typeof body?.enabled !== 'boolean') {
+      return writeJson(response, 400, result(false, '请提供 enabled 布尔值。', await state()))
+    }
     let error = null
     try {
-      await target.toggleTunnel(enabled)
+      const snapshot = await target.toggleTunnel(body.enabled)
+      if (snapshot.tunnelError) error = snapshot.tunnelError
     } catch (cause) {
       error = errorMessage(cause)
     }
@@ -454,7 +464,8 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevi
     if (!target) return unavailable(response)
     let error = null
     try {
-      await target.fallbackToPinggy()
+      const snapshot = await target.fallbackToPinggy()
+      if (snapshot.tunnelError) error = snapshot.tunnelError
     } catch (cause) {
       error = errorMessage(cause)
     }
@@ -500,11 +511,25 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevi
 }
 
 export function apply(ctx, config = {}) {
+  // 数据目录在装配时解析，而不是模块加载时：测试和多个插件实例可以各自指向临时目录。
+  const dataDir = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dsh-roam')
+  const cacheDir = join(dataDir, 'bin')
+  const pinFile = config.pinFile ?? join(dataDir, 'mobile-pairing-pin.json')
+  const settingsFile = config.settingsFile ?? join(dataDir, 'settings.json')
+  const acmeStateDir = join(dataDir, 'acme')
+  const acmeChallengeDir = join(acmeStateDir, 'challenge')
+  const mobileDevices = createMobileDeviceRegistry(join(dataDir, 'mobile-devices.json'))
+  const ipRegion = createIpRegionResolver(ipRegionDirectory(dataDir))
+  let ipRegionInstallStarted = false
+  /** 有设备要查归属地时才下载离线库；没人连过就不该占这几十兆流量。 */
+  const ensureIpRegionInstalled = () => {
+    if (ipRegionInstallStarted) return
+    ipRegionInstallStarted = true
+    void ipRegion.ensureInstalled().catch(() => undefined)
+  }
   const holder = { bridge: undefined }
-  const pinFile = config.pinFile ?? PIN_FILE
   const bridge = () => holder.bridge
   const mobileApiHolder = { current: undefined }
-  const settingsFile = config.settingsFile ?? SETTINGS_FILE
   const savedSettings = readBridgeSettings(settingsFile)
   const runtime = {
     settingsFile,
@@ -528,8 +553,8 @@ export function apply(ctx, config = {}) {
   }
   const certificates = createCertificateManager({
     domain: () => publicDomain(runtime.publicUrl),
-    stateDir: ACME_STATE_DIR,
-    challengeDir: ACME_CHALLENGE_DIR,
+    stateDir: acmeStateDir,
+    challengeDir: acmeChallengeDir,
     deployDir: config.frpcCertificateDir ?? FRPC_CERTIFICATE_DIR,
     log: (message) => console.warn('dsh-roam: ' + message),
   })
@@ -623,10 +648,10 @@ export function apply(ctx, config = {}) {
         harnessAuthToken: () => launchToken(ctx.connection, harnessOrigin(ctx.webServer)),
         mobileApi: mobileApiHolder.current,
         locale: 'zh',
-        cloudflaredCacheDir: CACHE_DIR,
+        cloudflaredCacheDir: cacheDir,
         pairingPinStore: pinStore,
         publicUrl: () => runtime.publicUrl ?? undefined,
-        acmeChallengeDir: () => ACME_CHALLENGE_DIR,
+        acmeChallengeDir: () => acmeChallengeDir,
         frameAncestors: () => {
           const origin = harnessOrigin(ctx.webServer)
           if (!origin) return undefined

@@ -37,6 +37,8 @@ const STATE_FIELDS = [
   'lanUrls',
   'desktopUrl',
   'connected',
+  'browserConnected',
+  'onlineDeviceCount',
   'tunnelActive',
   'tunnelLoading',
   'tunnelProvider',
@@ -53,6 +55,10 @@ const STATE_FIELDS = [
   'expectedPort',
   'portMatchesTunnel',
   'lastPublicUrlCheck',
+  'devices',
+  'certificate',
+  'version',
+  'now',
 ]
 
 interface ProbeResult {
@@ -140,6 +146,7 @@ async function startHarness(config: PluginConfig = {}) {
   // DSH host owns 43128 and the user's durable password must never leak in.
   const directory = await mkdtemp(join(tmpdir(), 'dsh-roam-run-'))
   tempDirectories.push(directory)
+  process.env.DSH_HOME = directory
   const pinFile = config.pinFile ?? join(directory, 'mobile-pairing-pin.json')
   const settingsFile = config.settingsFile ?? join(directory, 'settings.json')
   applyPhoneBridge(harnessContext(routes) as never, { port: portCounter++, ...config, pinFile, settingsFile })
@@ -288,6 +295,8 @@ describe('phone bridge fixed public URL routes', () => {
 
     const state = await readyState(port)
     for (const field of STATE_FIELDS) expect(state).toHaveProperty(field)
+    expect(Array.isArray(state.devices)).toBe(true)
+    expect(state.certificate).toEqual(expect.objectContaining({ selfSigned: expect.any(Boolean), pending: expect.any(Boolean) }))
     expect(state.publicUrl).toBe('https://dsh.example.com')
     expect(state.publicUrlConfigured).toBe(true)
     expect(state.mode).toBe('fixed')
@@ -360,6 +369,23 @@ describe('phone bridge fixed public URL routes', () => {
     expect(fallback.status).toBe(409)
     expect(fallback.body.error).toBe('已配置固定公网域名，临时隧道已停用。')
     expect(fallback.body.mode).toBe('fixed')
+  })
+
+  it('stops the temporary tunnel when a fixed public domain is saved', async () => {
+    const settingsFile = await tempSettingsFile()
+    const { port } = await startHarness({ settingsFile })
+    const enabled = await postJson(port, '/phone-bridge/tunnel', { enabled: true })
+    expect(enabled.status).toBe(200)
+    expect(enabled.body.tunnelActive).toBe(true)
+
+    const saved = await postJson(port, '/phone-bridge/settings', { publicUrl: 'https://dsh.example.com' })
+    expect(saved.status).toBe(200)
+    expect(saved.body.tunnelActive).toBe(false)
+    expect(saved.body.tunnelUrl).toBeNull()
+
+    const state = await readyState(port)
+    expect(state.tunnelActive).toBe(false)
+    expect(String(state.pairingUrl)).toContain('https://dsh.example.com')
   })
 
   it('reports portMatchesTunnel false when the bridge port is not 43128', async () => {

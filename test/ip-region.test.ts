@@ -99,4 +99,24 @@ describe('offline IP region lookup', () => {
     expect(resolver.describe(undefined)).toBe('')
     expect(resolver.describe('not-an-ip')).toBe('')
   })
+
+  it('retries loading after the database appears', () => {
+    const directory = databaseDirectory()
+    const resolver = createIpRegionResolver(directory)
+    expect(resolver.describe('1.0.1.1')).toBe('')
+    writeFileSync(
+      join(directory, 'ip2region_v4.xdb'),
+      buildDatabase(4, [
+        { start: [ipv4ToNumber('1.0.0.0')], end: [ipv4ToNumber('1.0.255.255')], region: '中国|北京市|北京市|0|CN' },
+      ]),
+    )
+    expect(resolver.describe('1.0.1.1')).toBe('中国 北京市 北京市')
+  })
+
+  it('treats a truncated database as unknown instead of throwing', () => {
+    const directory = databaseDirectory()
+    writeFileSync(join(directory, 'ip2region_v4.xdb'), Buffer.alloc(10))
+    const resolver = createIpRegionResolver(directory)
+    expect(resolver.describe('1.0.1.1')).toBe('')
+  })
 })

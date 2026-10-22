@@ -612,10 +612,12 @@ export class LanMobileBridge {
     const publicAccess = this.tunnelActive || Boolean(this.options.publicUrl?.())
     const view = this.readPairingPin()
     const pin = publicAccess ? this.ensurePairingPin() : view.consent === true ? view.pin : undefined
+    // ensurePairingPin 可能刚生成新 PIN；view 是生成前读的，过期时间必须取生成后的字段。
+    const pinExpiresAt = view.consent ? undefined : this.ephemeralPinExpiresAt
     return {
       ...(pin ? { pairingPin: pin } : {}),
       pinConsent: view.consent,
-      ...(view.consent || !view.expiresAt ? {} : { pinExpiresAt: view.expiresAt })
+      ...(pin && pinExpiresAt ? { pinExpiresAt } : {})
     }
   }
 
@@ -674,6 +676,8 @@ export class LanMobileBridge {
    * just paired cannot admit another device.
    */
   suspendMobileSessions(): void {
+    for (const abort of this.sessionStreamAborts) abort.abort()
+    this.sessionStreamAborts.clear()
     for (const [token, session] of this.sessions) {
       this.suspendedSessions.set(token, session)
       this.resumableSessions.set(token, session)
@@ -1242,7 +1246,9 @@ export class LanMobileBridge {
   ): boolean {
     const token = this.mobileToken(request)
     if (token && this.sessions.has(token)) return true
-    if (connectionMode === 'tunnel') return false
+    // 固定公网域名一旦配置，回环来源就不再等于“本机人”：frpc 也把公网请求送进 127.0.0.1。
+    // 这时只认设备 cookie，避免整台公网入口被一个 127.0.0.1 会话代表。
+    if (connectionMode === 'tunnel' || Boolean(this.options.publicUrl?.())) return false
     return [...this.sessions.values()].some((session) => session.remoteAddress === remoteAddress)
   }
 
@@ -1369,9 +1375,21 @@ export class LanMobileBridge {
     const host = (request.headers.host ?? '').split(':', 1)[0]?.toLowerCase() ?? ''
     const forwardedAddress = firstHeaderValue(request.headers['cf-connecting-ip'])
     const ray = firstHeaderValue(request.headers['cf-ray'])
-    return isInternetTunnelHost(host) || Boolean(forwardedAddress && ray)
+    // 固定公网域名经 frpc 回到本机时，Host 是用户自己的域名，源地址却是 127.0.0.1。
+    // 只靠 cloudflared/pinggy 的 Host 会把这条入口误判成局域网，从而跳过 6 位连接密码。
+    return isInternetTunnelHost(host) || Boolean(forwardedAddress && ray) || host === this.configuredPublicHost()
       ? 'tunnel'
       : 'lan'
+  }
+
+  private configuredPublicHost(): string | undefined {
+    const configured = this.options.publicUrl?.()
+    if (typeof configured !== 'string' || configured.length === 0) return undefined
+    try {
+      return new URL(configured).hostname.toLowerCase()
+    } catch {
+      return undefined
+    }
   }
 
   private tunnelMigrationUrl(url: URL, connectionMode: MobileConnectionMode): string | undefined {

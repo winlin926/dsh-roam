@@ -48,7 +48,7 @@ export function writePairingPinState(path: string, state: PairingPinState): bool
   try {
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(temporary, `${JSON.stringify(document, undefined, 2)}\n`, { mode: 0o600 })
-    if (existsSync(path)) unlinkSync(path)
+    // Windows 的 renameSync 使用 MoveFileEx(REPLACE_EXISTING)，直接覆盖；先删旧文件会把原子替换变成两个步骤。
     renameSync(temporary, path)
     return true
   } catch {

@@ -912,8 +912,9 @@ describe('LAN mobile bridge pairing surface', () => {
     // Let the async 'error' (when present) fire; with the sink in place the
     // process survives and the request unwinds cleanly.
     await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(upgraded.length).toBeGreaterThan(0)
     for (const socket of upgraded) socket.destroy()
-    expect(true).toBe(true)
+    expect(upgraded.every((socket) => socket.destroyed)).toBe(true)
   })
 })
 
@@ -1593,6 +1594,98 @@ describe('LAN vs tunnel pairing authorization', () => {
       headers: { ...headers, cookie: cookie.split(';', 1)[0]! }
     })
     expect(owner.status).toBe(200)
+  })
+
+  it('requires the PIN when a fixed public domain arrives through frpc', async () => {
+    const store = memoryPinStore({ pin: '246810', pinConsent: true })
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => 'http://127.0.0.1:9999',
+      pairingPinStore: store,
+      publicUrl: () => 'https://dsh.example.com'
+    })
+    bridges.push(bridge)
+    const snapshot = await bridge.start()
+    const token = new URL(bridge.snapshot().pairingUrl ?? `http://x/pair?token=missing`).searchParams.get(
+      'token'
+    )
+    // frpc 把公网请求送到本机回环，Host 仍是用户自己的域名。
+    // fetch 会丢掉自定义 Host，这里必须用 node:http 才能复现 frpc 的转发形态。
+    const request = (
+      path: string,
+      method: string,
+      headers: Record<string, string>,
+      body?: string
+    ): Promise<{ status?: number; setCookie?: string; text: string }> =>
+      new Promise((resolve, reject) => {
+        const outgoing = httpRequest(
+          { host: '127.0.0.1', port: snapshot.port, path, method, headers },
+          (response) => {
+            const chunks: Buffer[] = []
+            response.on('data', (chunk: Buffer) => chunks.push(chunk))
+            response.once('end', () =>
+              resolve({
+                status: response.statusCode,
+                setCookie: response.headers['set-cookie']?.[0],
+                text: Buffer.concat(chunks).toString('utf8')
+              })
+            )
+          }
+        )
+        outgoing.once('error', reject)
+        if (body !== undefined) outgoing.write(body)
+        outgoing.end()
+      })
+
+    const pinPage = await request(`/pair?token=${token}`, 'GET', { host: 'dsh.example.com' })
+    expect(pinPage.status).toBe(200)
+    expect(pinPage.text).toContain('Enter pairing password')
+    expect(pinPage.setCookie).toBeUndefined()
+
+    const verified = await request('/pair/verify', 'POST', {
+      host: 'dsh.example.com',
+      'content-type': 'application/json'
+    }, JSON.stringify({ pin: '246810' }))
+    expect(verified.status).toBe(200)
+    expect(verified.setCookie).toContain('Secure')
+
+    const stranger = await request('/api/status', 'GET', { host: 'dsh.example.com' })
+    expect(stranger.status).toBe(401)
+  })
+
+  it('reports the fresh expiry on the first and rotated ephemeral PIN', async () => {
+    let now = 1_000_000
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => 'http://127.0.0.1:9999',
+      pairingPinStore: memoryPinStore(),
+      publicUrl: () => 'https://dsh.example.com',
+      now: () => now
+    })
+    bridges.push(bridge)
+    await bridge.start()
+
+    const fields = () =>
+      (bridge as unknown as { desktopPinFields(): { pairingPin?: string; pinExpiresAt?: number } }).desktopPinFields()
+    const first = fields()
+    expect(first.pairingPin).toMatch(/^[0-9]{6}$/)
+    expect(first.pinExpiresAt).toBe(now + 5 * 60_000)
+
+    now += 5 * 60_000 + 1
+    const second = fields()
+    expect(second.pairingPin).not.toBe(first.pairingPin)
+    expect(second.pinExpiresAt).toBe(now + 5 * 60_000)
+  })
+
+  it('aborts open browser session streams when the browser is disconnected', async () => {
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => 'http://127.0.0.1:9999'
+    })
+    bridges.push(bridge)
+    await bridge.start()
+
+    const abort = new AbortController()
+    ;(bridge as unknown as { sessionStreamAborts: Set<AbortController> }).sessionStreamAborts.add(abort)
+    bridge.suspendMobileSessions()
+    expect(abort.signal.aborted).toBe(true)
   })
 
   it('rate-limits PIN guesses per IP and globally', async () => {

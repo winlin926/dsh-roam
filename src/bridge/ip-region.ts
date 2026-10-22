@@ -52,7 +52,8 @@ export function createIpRegionResolver(directory: string): IpRegionResolver {
     } catch {
       loaded = null
     }
-    tables.set(version, loaded)
+    // 缺库不缓存：下载完成后下一次查询要能读到，而不是永远返回空。
+    if (loaded) tables.set(version, loaded)
     return loaded
   }
 
@@ -63,10 +64,18 @@ export function createIpRegionResolver(directory: string): IpRegionResolver {
     const cached = cache.get(ip)
     if (cached !== undefined) return cached
     const buffer = table(version)
-    const region = buffer ? search(buffer, ip, version) : ''
+    let region = ''
+    try {
+      region = buffer ? search(buffer, ip, version) : ''
+    } catch {
+      region = ''
+    }
     const label = prettify(region)
-    if (cache.size >= REGION_CACHE_LIMIT) cache.clear()
-    cache.set(ip, label)
+    // 空结果不缓存：库可能刚下载完，下一次查询应重新尝试。
+    if (label) {
+      if (cache.size >= REGION_CACHE_LIMIT) cache.clear()
+      cache.set(ip, label)
+    }
     return label
   }
 
@@ -104,6 +113,7 @@ async function download(sources: readonly string[], file: string): Promise<boole
 
 /** 在 xdb 段表里二分查找，返回原始 region 串（国家|省|市|ISP|国家代码）。 */
 function search(buffer: Buffer, ip: string, version: 4 | 6): string {
+  if (buffer.length < 256) return ''
   const width = RECORD_WIDTH[version]
   const declared = buffer.readUInt16LE(HEADER_IP_VERSION_OFFSET)
   if (declared !== version) return ''
@@ -132,6 +142,7 @@ function search(buffer: Buffer, ip: string, version: 4 | 6): string {
 }
 
 function readRegion(buffer: Buffer, middle: number, width: number): string {
+  if (middle < 0 || middle + width > buffer.length) return ''
   const length = buffer.readUInt16LE(middle + width - 6)
   const pointer = buffer.readUInt32LE(middle + width - 4)
   if (pointer + length > buffer.length) return ''

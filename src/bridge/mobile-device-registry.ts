@@ -62,12 +62,17 @@ export function createMobileDeviceRegistry(file: string): MobileDeviceRegistry {
     if (!deviceId) return
     const now = Date.now()
     const existing = load().find((record) => record.deviceId === deviceId)
+    // 重配对可能只带 deviceId；旧记录里的名称与系统版本必须留着，不能被空值覆盖。
+    const name = text(source.name) || existing?.name
+    const platform = text(source.platform) || existing?.platform
+    const osVersion = text(source.osVersion) || existing?.osVersion
+    const appVersion = text(source.appVersion) || existing?.appVersion
     const next: MobileDeviceRecord = {
       deviceId,
-      ...(text(source.name) ? { name: text(source.name) } : {}),
-      ...(text(source.platform) ? { platform: text(source.platform) } : {}),
-      ...(text(source.osVersion) ? { osVersion: text(source.osVersion) } : {}),
-      ...(text(source.appVersion) ? { appVersion: text(source.appVersion) } : {}),
+      ...(name ? { name } : {}),
+      ...(platform ? { platform } : {}),
+      ...(osVersion ? { osVersion } : {}),
+      ...(appVersion ? { appVersion } : {}),
       firstSeenAt: existing ? existing.firstSeenAt : now,
       lastSeenAt: now,
       ...(existing?.lastIp ? { lastIp: existing.lastIp } : {})
@@ -80,12 +85,10 @@ export function createMobileDeviceRegistry(file: string): MobileDeviceRegistry {
     if (!deviceId) return
     const now = Date.now()
     const existing = load().find((record) => record.deviceId === deviceId)
-    if (existing) {
-      existing.lastSeenAt = now
-      if (ip) existing.lastIp = ip
-    } else {
-      load().push({ deviceId, firstSeenAt: now, lastSeenAt: now, ...(ip ? { lastIp: ip } : {}) })
-    }
+    // 已被移除的设备不能因为一个迟到的请求复活：活动只更新既有台账。
+    if (!existing) return
+    existing.lastSeenAt = now
+    if (ip) existing.lastIp = ip
     if (now - lastSavedAt >= ACTIVITY_SAVE_INTERVAL_MS) save()
   }
 

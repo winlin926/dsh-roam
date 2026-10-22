@@ -103,7 +103,7 @@ describe('LAN mobile page', () => {
     expect(html).toContain('id="todoDock" class="todo-dock"')
     expect(html).toContain('function updateTodos(projections)')
     expect(html).toContain('projections?.values?.todos')
-    expect(html).toContain('Deep diving...</div>')
+    expect(html).toContain('Deep diving...')
     expect(html).toContain("box.innerHTML=messages.map(renderMessage).join('')+status")
     expect(html).not.toContain('id="turnStatus"')
     expect(html).toContain('.messages .turn-status{align-self:flex-start;flex:none;margin:3px 4px}')
@@ -861,5 +861,67 @@ describe('desktop pairing page expiry copy', () => {
     })
     expect(html).toContain('QR expired. Refreshing automatically')
     expect(html).not.toContain('Reopen this window')
+  })
+})
+
+
+describe('mobile action busy contract', () => {
+  it('disables new session and cancel while their request is in flight', () => {
+    const html = renderMobilePage({ locale: 'zh' })
+    expect(html).toContain('class="new-session-label"')
+    expect(html).toContain('sessionCreateBusy=false,cancelBusy=false')
+    expect(html).toContain('if(sessionCreateBusy)return')
+    expect(html).toContain("button.setAttribute('aria-busy','true')")
+    expect(html).toContain("button.setAttribute('aria-label',L.stopping)")
+    expect(html).toContain("button.setAttribute('aria-label',L.stop)")
+    expect(html).toContain('L.creating')
+    expect(html).toContain('L.refreshing')
+    expect(html).toContain('loadSessions(true)')
+  })
+
+  it('surfaces copy, PIN and disconnect failures in visible status regions', () => {
+    const html = renderDesktopPairingPage({
+      qrSvg: '<svg></svg>',
+      pairingUrl: 'http://192.168.1.4:39871/pair?token=abc123',
+      expiresAt: Date.now() + 60_000,
+      locale: 'zh',
+      connected: false,
+    })
+    expect(html).toContain('id="pinStatus" class="pin-status"')
+    expect(html).toContain('id="actionStatus" class="pin-status"')
+    expect(html).toContain('function showPinStatus(message,tone)')
+    expect(html).toContain('function showActionStatus(message)')
+    expect(html).toContain("tip.classList.add('show')")
+    expect(html).toContain("if(!r.ok||!j?.ok)throw new Error(j?.error||T.tunnelError);location.reload()")
+  })
+
+  it('keeps the mobile touch targets at least 32px', () => {
+    const html = renderMobilePage({ locale: 'en' })
+    expect(html).toContain('.settings-close{display:grid;place-items:center;width:32px;height:32px;')
+    expect(html).toContain('.question-close{width:32px;height:32px;')
+    expect(html).toContain(`aria-label="'+L.close+'">×</button>`)
+
+    const desktop = renderDesktopPairingPage({
+      qrSvg: '<svg></svg>',
+      pairingUrl: 'http://192.168.1.4:39871/pair?token=abc123',
+      expiresAt: Date.now() + 60_000,
+      locale: 'en',
+      connected: false,
+    })
+    expect(desktop).toContain('.copy{position:relative;display:grid;place-items:center;width:32px;height:32px;')
+  })
+
+  it('reports copy and disconnect failures instead of swallowing them', () => {
+    const html = renderDesktopPairingPage({
+      qrSvg: '<svg></svg>',
+      pairingUrl: 'http://192.168.1.4:39871/pair?token=abc123',
+      expiresAt: Date.now() + 60_000,
+      locale: 'zh',
+      connected: false
+    })
+    expect(html).toContain('copyFailed')
+    expect(html).toContain("tip.textContent=T.copyFailed")
+    expect(html).toContain('async function disconnectPhone(){if(disconnectBusy)return;')
+    expect(html).toContain('async function resetPin(){if(pinBusy)return;')
   })
 })

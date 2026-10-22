@@ -108,6 +108,8 @@ function idleState() {
     lanUrls: [],
     desktopUrl: null,
     connected: false,
+    browserConnected: null,
+    onlineDeviceCount: null,
     tunnelActive: false,
     tunnelLoading: false,
     tunnelProvider: null,
@@ -199,8 +201,8 @@ describe('phone bridge settings panel', () => {
     expect(text).toContain('已连接设备')
     expect(text).toContain('Xiaomi 15（android）')
     expect(text).toContain('223.5.5.5 · 中国 浙江省 杭州市')
-    expect(text).toContain('经隧道转发，看不到手机 IP')
-    expect(text).toContain('1 在线 / 2 台')
+    expect(text).toContain('未记录公网 IP（局域网直连或经隧道转发）')
+    expect(text).toContain('App 在线 1 / 共 2 台')
     const dots = elements(panel).filter((element) => String(element.props.className ?? '').includes('dshp_deviceDot'))
     expect(dots.map((element) => element.props.className)).toEqual([
       'dshp_deviceDot dshp_deviceDotOnline',
@@ -208,12 +210,57 @@ describe('phone bridge settings panel', () => {
     ])
   })
 
-  it('prints the panel version and refresh clock so a stale page is obvious', () => {
+  it('prints the panel version and keeps the refresh clock in diagnostics', () => {
     const now = Date.now()
     const panel = render(statePayload({ version: '0.2.1', now }))
     expect(textOf(panel)).toContain('面板 v0.2.1')
+    expect(textOf(panel)).toContain('面板数据')
     const stale = render(statePayload({ version: null, now: null }))
     expect(textOf(stale)).toContain('页面可能是旧缓存')
+  })
+
+  it('shows when the temporary PIN and the QR code expire', () => {
+    const now = Date.now()
+    const panel = render(
+      statePayload({
+        publicUrl: 'https://dsh.example.com',
+        publicUrlConfigured: true,
+        mode: 'fixed',
+        pairingPin: '246810',
+        pinConsent: false,
+        pinExpiresAt: now + 4 * 60_000,
+        expiresAt: now + 5 * 60_000,
+        now,
+      }),
+    )
+    const text = textOf(panel)
+    expect(text).toContain('临时密码，约 4 分钟后失效')
+    expect(text).toContain('二维码约 5 分钟后失效')
+  })
+
+  it('keeps the connectivity test disabled until a fixed public domain is saved', () => {
+    const lan = render(statePayload())
+    const lanTest = buttonByAction(lan, 'test')
+    expect(lanTest).toBeTruthy()
+    expect(lanTest!.props.disabled).toBe(true)
+    expect(String(lanTest!.props.title)).toContain('先保存固定公网域名')
+
+    const fixed = render(
+      statePayload({ publicUrl: 'https://dsh.example.com', publicUrlConfigured: true, mode: 'fixed' }),
+    )
+    expect(buttonByAction(fixed, 'test')!.props.disabled).toBe(false)
+
+    let dirty = render(
+      statePayload({ publicUrl: 'https://dsh.example.com', publicUrlConfigured: true, mode: 'fixed' }),
+    )
+    const input = elements(dirty).find(
+      (element) => element.type === 'input' && element.props['data-field'] === 'public-url',
+    )
+    ;(input!.props.onChange as (event: unknown) => void)({ target: { value: 'https://new.example.com' } })
+    dirty = rerender()
+    const dirtyTest = buttonByAction(dirty, 'test')
+    expect(dirtyTest!.props.disabled).toBe(true)
+    expect(String(dirtyTest!.props.title)).toContain('先保存域名')
   })
 
   it('shows the certificate row with an issue button once the public URL is fixed', () => {
@@ -228,6 +275,92 @@ describe('phone bridge settings panel', () => {
     const issue = elements(panel).find((element) => element.props['data-action'] === 'issue-certificate')
     expect(issue).toBeTruthy()
     expect(textOf(issue)).toContain('申请证书')
+
+    const pending = render(
+      statePayload({
+        publicUrl: 'https://dsh.example.com',
+        publicUrlConfigured: true,
+        certificate: { domain: 'dsh.example.com', selfSigned: false, pending: true },
+      }),
+    )
+    const pendingIssue = elements(pending).find(
+      (element) => element.props['data-action'] === 'issue-certificate',
+    )
+    expect(pendingIssue!.props.disabled).toBe(true)
+    expect(textOf(pendingIssue)).toContain('正在申请…')
+  })
+
+  it('hides a stale certificate error when no fixed public domain is configured', () => {
+    const panel = render(
+      statePayload({
+        publicUrl: null,
+        publicUrlConfigured: false,
+        certificate: { error: '上次签发失败', selfSigned: false, pending: false },
+      }),
+    )
+    expect(textOf(panel)).not.toContain('上次签发失败')
+  })
+
+  it('hides certificate errors that belong to another domain', () => {
+    const panel = render(
+      statePayload({
+        publicUrl: 'https://b.example.com',
+        publicUrlConfigured: true,
+        certificate: {
+          domain: 'a.example.com',
+          error: 'rate limited for a.example.com',
+          selfSigned: false,
+          pending: false,
+        },
+      }),
+    )
+    expect(textOf(panel)).not.toContain('rate limited for a.example.com')
+  })
+
+  it('separates browser connection from App event-stream presence', () => {
+    const appOnly = render(
+      statePayload({
+        connected: false,
+        browserConnected: false,
+        onlineDeviceCount: 1,
+        devices: [{ deviceId: 'app-1', name: 'AI-HUB', online: true }],
+      }),
+    )
+    expect(textOf(appOnly)).toContain('App 在线')
+    expect(textOf(appOnly)).not.toContain('等待连接')
+    expect(textOf(appOnly)).toContain('App 在线，可继续使用')
+    expect(textOf(appOnly)).toContain('要永久断开，请在设备列表移除')
+    expect(textOf(appOnly)).not.toContain('断开手机网页')
+
+    const browser = render(statePayload({ connected: true, browserConnected: true }))
+    expect(textOf(browser)).toContain('浏览器已连接')
+    expect(textOf(browser)).toContain('浏览器已连接，可继续使用')
+
+    const both = render(
+      statePayload({
+        connected: true,
+        browserConnected: true,
+        onlineDeviceCount: 1,
+        devices: [{ deviceId: 'app-1', name: 'AI-HUB', online: true }],
+      }),
+    )
+    expect(textOf(both)).toContain('浏览器已连接 · App 在线')
+    expect(textOf(both)).toContain('另有 1 台 App 正在后台连接。')
+  })
+
+  it('uses the server clock for certificate expiry', () => {
+    const now = 1000
+    const panel = render(
+      statePayload({
+        now,
+        publicUrl: 'https://dsh.example.com',
+        publicUrlConfigured: true,
+        mode: 'fixed',
+        certificate: { expiresAt: now + 60_000, selfSigned: false, pending: false },
+      }),
+    )
+    expect(textOf(panel)).not.toContain('证书已过期')
+    expect(textOf(panel)).toContain('证书有效至')
   })
 
   it('renders the six cards and the header pill for the ready state', () => {
@@ -236,8 +369,8 @@ describe('phone bridge settings panel', () => {
     expect(tipOf(panel, '公网入口：任意网络')).toBeTruthy()
     expect(cardsOf(panel).map((element) => element.props['data-card'])).toEqual([
       'header',
-      'public',
       'qr',
+      'public',
       'devices',
       'security',
       'diagnostics',
@@ -247,12 +380,12 @@ describe('phone bridge settings panel', () => {
     expect(textOf(pill)).toContain('等待连接')
     expect(String(pill!.props.className)).not.toContain('dshp_success')
 
-    const connected = render(statePayload({ connected: true }))
-    expect(textOf(connected)).toContain('手机已连接')
+    const connected = render(statePayload({ connected: true, browserConnected: true }))
+    expect(textOf(connected)).toContain('浏览器已连接')
     const connectedPill = elements(connected).find((element) => String(element.props.className ?? '').includes('dshp_pill'))
     expect(String(connectedPill!.props.className)).toContain('dshp_success')
     const connectedText = elements(connected).find((element) => element.props.className === 'dshp_connectedText')
-    expect(textOf(connectedText)).toContain('手机已连接，可继续使用')
+    expect(textOf(connectedText)).toContain('浏览器已连接，可继续使用')
   })
 
   it('draws the QR in page and never renders an iframe', () => {
@@ -338,9 +471,9 @@ describe('phone bridge settings panel', () => {
     expect(tunnelText).toContain('https://stub-mobile.trycloudflare.com')
     expect(tipOf(tunneled, '长期有效')).toBeTruthy()
 
-    const connectedPanel = render(statePayload({ connected: true }))
-    expect(textOf(connectedPanel)).toContain('断开手机')
-    expect(textOf(connectedPanel)).toContain('手机已连接')
+    const connectedPanel = render(statePayload({ connected: true, browserConnected: true }))
+    expect(textOf(connectedPanel)).toContain('断开手机网页')
+    expect(textOf(connectedPanel)).toContain('浏览器已连接')
   })
 
   it('copies the access address through the clipboard API and confirms it', async () => {
@@ -416,6 +549,31 @@ describe('phone bridge settings panel', () => {
     const notice = elements(savedPanel).find((element) => element.props.className === 'dshp_notice')
     expect(notice).toBeTruthy()
     expect(textOf(notice)).toContain('连接密码已保存，立即生效。')
+    expect(input!.props['aria-label']).toBe('固定连接密码')
+  })
+
+  it('keeps the typed connection password after a failed save', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('offline')
+    }))
+
+    let panel = render(statePayload({ pairingPin: '411475', pinConsent: true }))
+    const input = elements(panel).find(
+      (element) => element.type === 'input' && element.props['data-field'] === 'pairing-pin',
+    )
+    ;(input!.props.onChange as (event: unknown) => void)({ target: { value: '051109' } })
+    panel = rerender()
+
+    await (buttonByAction(panel, 'save-pin')!.props.onClick as () => Promise<unknown>)()
+    panel = rerender()
+    const after = elements(panel).find(
+      (element) => element.type === 'input' && element.props['data-field'] === 'pairing-pin',
+    )
+    expect(after!.props.value).toBe('051109')
+    const error = elements(panel).find(
+      (element) => element.props.className === 'dshp_error' && element.props.role === 'alert',
+    )
+    expect(textOf(error)).toContain('无法连接到 DSH 主进程')
   })
 
   it('marks a passing domain probe green and a failing one red', () => {

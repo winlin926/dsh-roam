@@ -1,3 +1,5 @@
 node_modules/
 lib/
 *.log
+# Windows 证书缓存：pnpm 在部分机器上按字面量落盘，不属于仓库内容
+%SystemDrive%/

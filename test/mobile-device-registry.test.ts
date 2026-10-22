@@ -69,4 +69,36 @@ describe('mobile device registry', () => {
     registry.rememberPairing({ name: 'anonymous' })
     expect(registry.list()).toEqual([])
   })
+
+  it('keeps the metadata reported earlier when a later pairing only carries the device id', () => {
+    const registry = createMobileDeviceRegistry(registryFile())
+    registry.rememberPairing({
+      deviceId: 'device-1',
+      name: 'Xiaomi 15',
+      platform: 'android',
+      osVersion: '15',
+      appVersion: '0.2.139',
+    })
+    registry.rememberPairing({ deviceId: 'device-1' })
+
+    expect(registry.list()).toEqual([
+      expect.objectContaining({
+        name: 'Xiaomi 15',
+        platform: 'android',
+        osVersion: '15',
+        appVersion: '0.2.139',
+      }),
+    ])
+  })
+
+  it('does not recreate a removed device from a late activity report', () => {
+    const registry = createMobileDeviceRegistry(registryFile())
+    registry.rememberPairing({ deviceId: 'device-1', name: 'Xiaomi 15' })
+    registry.forget('device-1')
+    registry.noteActivity('device-1', '223.5.5.5')
+    expect(registry.list()).toEqual([])
+
+    registry.noteActivity('unknown-device', '223.5.5.5')
+    expect(registry.list()).toEqual([])
+  })
 })

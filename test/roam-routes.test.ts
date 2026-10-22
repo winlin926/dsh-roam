@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -39,6 +39,8 @@ const STATE_FIELDS = [
   'lanUrls',
   'desktopUrl',
   'connected',
+  'browserConnected',
+  'onlineDeviceCount',
   'tunnelActive',
   'tunnelLoading',
   'tunnelProvider',
@@ -69,6 +71,7 @@ interface HarnessContext {
 
 const servers: ReturnType<typeof createServer>[] = []
 const disposers: unknown[] = []
+const tempDirectories: string[] = []
 
 afterEach(async () => {
   for (const dispose of disposers.splice(0).reverse()) {
@@ -85,6 +88,7 @@ afterEach(async () => {
         })
     )
   )
+  await Promise.all(tempDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
 function harnessContext(routes: HarnessRoute[]): HarnessContext {
@@ -116,6 +120,8 @@ async function startHarness(config: { pinFile?: string; settingsFile?: string } 
   // Each harness gets its own settings + pin files so a test run never reads
   // the real ~/.dsh/phone-bridge configuration on this machine.
   const directory = await mkdtemp(join(tmpdir(), 'dsh-roam-harness-'))
+  tempDirectories.push(directory)
+  process.env.DSH_HOME = directory
   const settingsFile = config.settingsFile ?? join(directory, 'settings.json')
   const pinFile = config.pinFile ?? join(directory, 'mobile-pairing-pin.json')
   applyPhoneBridge(harnessContext(routes) as never, { port: harnessPortCounter++, ...config, pinFile, settingsFile })
@@ -231,6 +237,11 @@ describe('phone bridge settings routes', () => {
 
   it('enables, falls back, and disables the tunnel through the same-origin routes', async () => {
     const { port } = await startHarness()
+
+    const invalid = await postJson(port, '/phone-bridge/tunnel', {})
+    expect(invalid.status).toBe(400)
+    expect(invalid.body.ok).toBe(false)
+    expect(invalid.body.tunnelActive).toBe(false)
 
     const enabled = await postJson(port, '/phone-bridge/tunnel', { enabled: true })
     expect(enabled.status).toBe(200)

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import net from 'node:net'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, hostname } from 'node:os'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
 import { LanMobileBridge, isPrivateAddress } from './bridge/lan-mobile-bridge.js'
@@ -187,6 +187,8 @@ function idleState(publicUrl = null, lastPublicUrlCheck = null, expectedPort = P
     connected: false,
     browserConnected: false,
     onlineDeviceCount: 0,
+    aihubQrSvg: null,
+    aihubLanUrls: [],
     tunnelActive: false,
     tunnelLoading: false,
     tunnelProvider: null,
@@ -237,6 +239,25 @@ async function bridgeState(bridge, runtime) {
   })
   const devices = runtime?.devices?.() ?? []
   const onlineDeviceCount = devices.filter((device) => device.online === true).length
+  const aihubLanUrls = bridgePort ? bridge.lanAddressCandidates().map((address) => `http://${address}:${bridgePort}`) : []
+  const aihubPin = pins.pinConsent === true ? pins.pairingPin : undefined
+  const relay = runtime?.relayState?.() ?? {}
+  const relayInstanceId = typeof relay.instanceId === 'string' ? relay.instanceId : undefined
+  const relayName = typeof relay.name === 'string' && relay.name ? relay.name : hostname()
+  const aihubPairingText =
+    aihubPin && relayInstanceId && aihubLanUrls.length > 0
+      ? `dshpair://v1?data=${encodeURIComponent(JSON.stringify({
+          type: 'dsh-pair',
+          version: 1,
+          name: relayName,
+          instanceId: relayInstanceId,
+          code: aihubPin,
+          relayUrl: '',
+          lanUrls: aihubLanUrls,
+          lanCandidates: aihubLanUrls,
+        }))}`
+      : null
+  const aihubQrSvg = aihubPairingText ? await QRCode.toString(aihubPairingText, QR_OPTIONS) : null
   return {
     ready: true,
     qrSvg: pairingUrl ? await QRCode.toString(pairingUrl, QR_OPTIONS) : null,
@@ -246,6 +267,8 @@ async function bridgeState(bridge, runtime) {
     connected: snapshot.connected === true,
     browserConnected: snapshot.connected === true,
     onlineDeviceCount,
+    aihubQrSvg,
+    aihubLanUrls,
     tunnelActive: snapshot.tunnelActive === true,
     tunnelLoading: snapshot.tunnelLoading === true,
     tunnelProvider: snapshot.tunnelProvider ?? null,
@@ -513,6 +536,14 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevi
 export function apply(ctx, config = {}) {
   // 数据目录在装配时解析，而不是模块加载时：测试和多个插件实例可以各自指向临时目录。
   const dataDir = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dsh-roam')
+  const dshHome = dirname(dataDir)
+  const readRelayState = () => {
+    try {
+      return JSON.parse(readFileSync(join(dshHome, 'relay.json'), 'utf8'))
+    } catch {
+      return {}
+    }
+  }
   const cacheDir = join(dataDir, 'bin')
   const pinFile = config.pinFile ?? join(dataDir, 'mobile-pairing-pin.json')
   const settingsFile = config.settingsFile ?? join(dataDir, 'settings.json')
@@ -539,6 +570,7 @@ export function apply(ctx, config = {}) {
   const savedSettings = readBridgeSettings(settingsFile)
   const runtime = {
     settingsFile,
+    relayState: readRelayState,
     publicUrl: savedSettings.publicUrl,
     expectedPort: config.publicPort ?? PORT_START,
     lastPublicUrlCheck: null,

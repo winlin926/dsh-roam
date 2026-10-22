@@ -32,6 +32,8 @@ window.__ModuleLoader__.load({
       '.dshp_qrLayout{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start}',
       '.dshp_qr{box-sizing:border-box;flex:0 0 224px;display:flex;align-items:center;justify-content:center;width:224px;height:224px;padding:12px;overflow:hidden;border:1px solid var(--dsw-alias-settings-card-stroke);border-radius:14px;background:#fff;box-shadow:inset 0 0 0 1px rgba(15,23,42,.02)}',
       '.dshp_qr svg{display:block;width:200px;height:200px}',
+      '.dshp_qrMini{flex:0 0 160px;width:160px;height:160px;padding:8px;margin:0 auto}',
+      '.dshp_qrMini svg{width:144px;height:144px}',
       '.dshp_qrPlaceholder{font-size:12px;line-height:18px;color:#6b7280}',
       '.dshp_qrDetails{display:flex;flex:1 1 300px;flex-direction:column;gap:14px;min-width:0}',
       '.dshp_field{display:flex;flex-direction:column;gap:7px;min-width:0}',
@@ -190,6 +192,8 @@ window.__ModuleLoader__.load({
       lastPublicUrlCheck: null,
       devices: [],
       certificate: null,
+      aihubQrSvg: null,
+      aihubLanUrls: [],
       version: null,
       now: null,
     }
@@ -438,6 +442,9 @@ window.__ModuleLoader__.load({
         const draftValue = draftUrl === null ? publicUrl : draftUrl
         const draftDirty = draftUrl !== null && draftUrl.trim() !== publicUrl
         const deviceList = Array.isArray(state.devices) ? state.devices : []
+        const aihubLanUrls = Array.isArray(state.aihubLanUrls)
+          ? state.aihubLanUrls.filter((url) => typeof url === 'string' && url.length > 0)
+          : []
         const deviceOnlineCount = deviceList.filter((device) => device.online === true).length
         const onlineDeviceCount = Number.isInteger(state.onlineDeviceCount)
           ? Math.min(Math.max(state.onlineDeviceCount, deviceOnlineCount), deviceList.length)
@@ -603,6 +610,39 @@ window.__ModuleLoader__.load({
                     ),
                   )
                 : null,
+              h(
+                'div',
+                { className: 'dshp_field' },
+                h(
+                  'div',
+                  { className: 'dshp_labelRow' },
+                  h('span', { className: 'dshp_label' }, 'AI-HUB App 局域网'),
+                  helpTip('AI-HUB 扫码走局域网；协议选 http，地址为 http://电脑IP:端口，配对码为上方 6 位。'),
+                ),
+                aihubLanUrls.length === 0
+                  ? h('p', { className: 'dshp_note' }, '没有可用的局域网地址，请确认手机和电脑在同一 Wi-Fi。')
+                  : state.aihubQrSvg
+                    ? h('div', {
+                        className: 'dshp_qr dshp_qrMini',
+                        dangerouslySetInnerHTML: { __html: String(state.aihubQrSvg) },
+                      })
+                    : h(
+                        'p',
+                        { className: 'dshp_note' },
+                        state.pinConsent === true
+                          ? 'AI-HUB 配对二维码暂不可用，请重载插件。'
+                          : '先在「连接密码」里设置固定 6 位密码，才能生成 AI-HUB 配对二维码。',
+                      ),
+                aihubLanUrls.length > 0
+                  ? h(
+                      'div',
+                      { className: 'dshp_valueRow' },
+                      h('code', { className: 'dshp_addr' }, aihubLanUrls[0]),
+                      copyButton('aihub', 'qr', aihubLanUrls[0]),
+                    )
+                  : null,
+                h('p', { className: 'dshp_note' }, '协议选 http，地址填这个，配对码填上方 6 位。'),
+              ),
               hasPhoneConnection
                 ? h(
                     'p',

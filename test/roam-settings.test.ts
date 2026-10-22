@@ -39,6 +39,8 @@ const STATE_FIELDS = [
   'connected',
   'browserConnected',
   'onlineDeviceCount',
+  'aihubQrSvg',
+  'aihubLanUrls',
   'tunnelActive',
   'tunnelLoading',
   'tunnelProvider',
@@ -147,6 +149,7 @@ async function startHarness(config: PluginConfig = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-roam-run-'))
   tempDirectories.push(directory)
   process.env.DSH_HOME = directory
+  await writeFile(join(directory, 'relay.json'), JSON.stringify({ instanceId: 'test-instance', name: 'Test PC' }))
   const pinFile = config.pinFile ?? join(directory, 'mobile-pairing-pin.json')
   const settingsFile = config.settingsFile ?? join(directory, 'settings.json')
   applyPhoneBridge(harnessContext(routes) as never, { port: portCounter++, ...config, pinFile, settingsFile })
@@ -369,6 +372,18 @@ describe('phone bridge fixed public URL routes', () => {
     expect(fallback.status).toBe(409)
     expect(fallback.body.error).toBe('已配置固定公网域名，临时隧道已停用。')
     expect(fallback.body.mode).toBe('fixed')
+  })
+
+  it('offers an AI-HUB LAN pairing QR once a fixed PIN is set', async () => {
+    const settingsFile = await tempSettingsFile()
+    const { port } = await startHarness({ settingsFile })
+    await postJson(port, '/phone-bridge/pin', { pin: '051109' })
+
+    const state = await readyState(port)
+    expect(Array.isArray(state.aihubLanUrls)).toBe(true)
+    expect((state.aihubLanUrls as string[]).length).toBeGreaterThan(0)
+    expect(String((state.aihubLanUrls as string[])[0])).toMatch(/^http:\/\//)
+    expect(String(state.aihubQrSvg)).toMatch(/^<svg/)
   })
 
   it('stops the temporary tunnel when a fixed public domain is saved', async () => {

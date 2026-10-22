@@ -110,6 +110,8 @@ function idleState() {
     connected: false,
     browserConnected: null,
     onlineDeviceCount: null,
+    aihubQrSvg: null,
+    aihubLanUrls: [],
     tunnelActive: false,
     tunnelLoading: false,
     tunnelProvider: null,
@@ -315,6 +317,31 @@ describe('phone bridge settings panel', () => {
       }),
     )
     expect(textOf(panel)).not.toContain('rate limited for a.example.com')
+  })
+
+  it('shows the AI-HUB LAN address and pairing QR', () => {
+    const panel = render(
+      statePayload({
+        pinConsent: true,
+        pairingPin: '051109',
+        aihubQrSvg: QR_SVG,
+        aihubLanUrls: ['http://192.168.1.105:43128'],
+      }),
+    )
+    const text = textOf(panel)
+    expect(text).toContain('AI-HUB App 局域网')
+    expect(text).toContain('http://192.168.1.105:43128')
+    expect(text).toContain('协议选 http')
+    const qr = elements(panel).find((element) => element.props.className === 'dshp_qr dshp_qrMini')
+    expect(qr).toBeTruthy()
+    expect((qr!.props.dangerouslySetInnerHTML as { __html: string }).__html).toBe(QR_SVG)
+  })
+
+  it('asks for a fixed PIN before generating the AI-HUB QR', () => {
+    const panel = render(
+      statePayload({ pinConsent: false, aihubLanUrls: ['http://192.168.1.105:43128'] }),
+    )
+    expect(textOf(panel)).toContain('先在「连接密码」里设置固定 6 位密码')
   })
 
   it('separates browser connection from App event-stream presence', () => {

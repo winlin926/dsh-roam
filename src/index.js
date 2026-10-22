@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
 import { LanMobileBridge } from './bridge/lan-mobile-bridge.js'
 import { createMobileApiHost } from './bridge/mobile-api-host.js'
+import { createMobileDeviceRegistry } from './bridge/mobile-device-registry.js'
+import { createIpRegionResolver, ipRegionDirectory } from './bridge/ip-region.js'
 import { createFilePairingPinStore } from './bridge/pairing-pin-store.js'
 import {
   migrateStoredInitialPin,
@@ -22,6 +24,7 @@ const PUBLIC_URL_PROBE_TIMEOUT_MS = 12000
 const DATA_DIR = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dsh-roam')
 const CACHE_DIR = join(DATA_DIR, 'bin')
 const PIN_FILE = join(DATA_DIR, 'mobile-pairing-pin.json')
+const DEVICES_FILE = join(DATA_DIR, 'mobile-devices.json')
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json')
 const DESKTOP_URL_PATH = '/phone-bridge/desktop-url'
 const STATE_PATH = '/phone-bridge/state'
@@ -32,10 +35,22 @@ const TUNNEL_PATH = '/phone-bridge/tunnel'
 const TUNNEL_FALLBACK_PATH = '/phone-bridge/tunnel/fallback'
 const DISCONNECT_PATH = '/phone-bridge/disconnect'
 const PIN_PATH = '/phone-bridge/pin'
+const DEVICE_REMOVE_PATH = '/phone-bridge/devices/remove'
 const TUNNEL_DISABLED_MESSAGE = '已配置固定公网域名，临时隧道已停用。'
 /** Same SVG options the desktop page uses, so a QR that scans there scans here. */
 const QR_OPTIONS = { type: 'svg', margin: 1, width: 260 }
 const MAX_BODY_BYTES = 64 * 1024
+
+const mobileDevices = createMobileDeviceRegistry(DEVICES_FILE)
+const ipRegion = createIpRegionResolver(ipRegionDirectory(DATA_DIR))
+let ipRegionInstallStarted = false
+
+/** 有设备要查归属地时才下载离线库；没人连过就不该占这几十兆流量。 */
+function ensureIpRegionInstalled() {
+  if (ipRegionInstallStarted) return
+  ipRegionInstallStarted = true
+  void ipRegion.ensureInstalled().catch(() => undefined)
+}
 
 function choosePort(start) {
   const attempt = (port) =>
@@ -160,6 +175,7 @@ function idleState(publicUrl = null, lastPublicUrlCheck = null, expectedPort = P
     pinConsent: false,
     pinExpiresAt: null,
     expiresAt: null,
+    devices: [],
     publicUrl,
     publicUrlConfigured: publicUrl !== null,
     mode: publicUrl ? 'fixed' : 'lan',
@@ -211,6 +227,7 @@ async function bridgeState(bridge, runtime) {
     pinConsent: pins.pinConsent === true,
     pinExpiresAt: pins.pinExpiresAt ?? null,
     expiresAt: snapshot.expiresAt ?? null,
+    devices: runtime?.devices?.() ?? [],
     publicUrl,
     publicUrlConfigured: publicUrl !== null,
     mode: publicUrl ? 'fixed' : snapshot.tunnelActive === true ? 'tunnel' : 'lan',
@@ -303,7 +320,7 @@ function registerLoopbackRoute(ctx, label, method, path, handle) {
   }, 'dsh-roam ' + label)
 }
 
-function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl) {
+function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevice) {
   const state = () => bridgeState(bridge(), runtime)
   const unavailable = (response) =>
     writeJson(
@@ -426,6 +443,17 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl) {
       result(saved, saved ? null : '无法保存连接密码，请重试。', await state()),
     )
   })
+
+  registerLoopbackRoute(ctx, DEVICE_REMOVE_PATH, 'POST', DEVICE_REMOVE_PATH, async (request, response) => {
+    const body = await readJsonBody(request)
+    const deviceId = typeof body?.deviceId === 'string' ? body.deviceId.trim() : ''
+    if (!deviceId) {
+      return writeJson(response, 400, result(false, '请提供要移除的设备。', await state()))
+    }
+    revokeDevice(deviceId)
+    mobileDevices.forget(deviceId)
+    writeJson(response, 200, result(true, null, await state()))
+  })
 }
 
 export function apply(ctx, config = {}) {
@@ -439,6 +467,11 @@ export function apply(ctx, config = {}) {
     publicUrl: savedSettings.publicUrl,
     expectedPort: config.publicPort ?? PORT_START,
     lastPublicUrlCheck: null,
+    devices: () => {
+      const list = mobileDevices.list()
+      if (list.some((device) => device.lastIp)) ensureIpRegionInstalled()
+      return list.map((device) => ({ ...device, region: ipRegion.describe(device.lastIp) }))
+    },
   }
   const checkPublicUrl =
     typeof config.probePublicUrl === 'function' ? config.probePublicUrl : probePublicUrl
@@ -476,18 +509,19 @@ export function apply(ctx, config = {}) {
     return () => disposeRoute()
   }, 'dsh-roam desktop url')
 
-  registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl)
+  const mobileApiHolder = { current: undefined }
+  registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, (deviceId) => mobileApiHolder.current?.revokeDevice(deviceId) ?? 0)
 
   ctx.effect(() => {
     let instance
-    let mobileApi
     const pinFileExisted = existsSync(pinFile)
     const ready = (async () => {
       const port = config.port ?? await choosePort(PORT_START)
       const logos = brandLogoPaths()
       const pinStore = createFilePairingPinStore(pinFile)
-      mobileApi = createMobileApiHost({
+      mobileApiHolder.current = createMobileApiHost({
         ctx,
+        devices: mobileDevices,
         pin: () => instance?.pairingPin(),
         pinEnabled: () => instance?.pairingPinEnabled() === true,
         port: () => instance?.localPort(),
@@ -513,7 +547,7 @@ export function apply(ctx, config = {}) {
         port,
         harnessUrl: () => harnessOrigin(ctx.webServer),
         harnessAuthToken: () => launchToken(ctx.connection, harnessOrigin(ctx.webServer)),
-        mobileApi,
+        mobileApi: mobileApiHolder.current,
         locale: 'zh',
         cloudflaredCacheDir: CACHE_DIR,
         pairingPinStore: pinStore,
@@ -531,7 +565,7 @@ export function apply(ctx, config = {}) {
       })
       holder.bridge = instance
       await migrateStoredInitialPin(settingsFile, (pin) => instance.setDurablePin(pin))
-      if (!pinFileExisted && mobileApi.available && !instance.pairingPinEnabled()) instance.setPinConsent(true)
+      if (!pinFileExisted && mobileApiHolder.current.available && !instance.pairingPinEnabled()) instance.setPinConsent(true)
       await instance.start()
     })()
     ready.catch((error) => {
@@ -542,7 +576,7 @@ export function apply(ctx, config = {}) {
       holder.bridge = undefined
       await ready.catch(() => undefined)
       if (instance) await instance.stop()
-      mobileApi?.close()
+      mobileApiHolder.current?.close()
     }
   }, 'dsh-roam')
 }

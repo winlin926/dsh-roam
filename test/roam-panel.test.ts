@@ -170,7 +170,30 @@ describe('phone bridge settings panel', () => {
     expect(elements(panel).some((element) => element.type === 'iframe')).toBe(false)
   })
 
-  it('renders the five cards and the header pill for the ready state', () => {
+  it('lists paired devices with their source IP and region', () => {
+    const panel = render(
+      statePayload({
+        devices: [
+          {
+            deviceId: 'device-1',
+            name: 'Xiaomi 15',
+            platform: 'android',
+            lastIp: '223.5.5.5',
+            region: '中国 浙江省 杭州市',
+            firstSeenAt: 1,
+            lastSeenAt: Date.now(),
+          },
+        ],
+      }),
+    )
+    const text = textOf(panel)
+    expect(text).toContain('已连接设备')
+    expect(text).toContain('Xiaomi 15（android）')
+    expect(text).toContain('223.5.5.5 · 中国 浙江省 杭州市')
+    expect(text).toContain('1 台')
+  })
+
+  it('renders the six cards and the header pill for the ready state', () => {
     const panel = render(statePayload())
     expect(tipOf(panel, '局域网直连：同一 Wi-Fi')).toBeTruthy()
     expect(tipOf(panel, '公网入口：任意网络')).toBeTruthy()
@@ -178,6 +201,7 @@ describe('phone bridge settings panel', () => {
       'header',
       'public',
       'qr',
+      'devices',
       'security',
       'diagnostics',
     ])

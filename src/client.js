@@ -62,6 +62,9 @@ window.__ModuleLoader__.load({
       '.dshp_checkState{font-size:12px;line-height:18px;font-weight:600}',
       '.dshp_list{display:flex;flex-direction:column;gap:8px;margin:0;padding:0;list-style:none}',
       '.dshp_listItem{display:flex;align-items:center;gap:8px;min-width:0}',
+      '.dshp_deviceItem{align-items:flex-start;justify-content:space-between;padding:10px 12px;border:1px solid color-mix(in srgb, #4f7cff 12%, var(--dsw-alias-settings-card-stroke));border-radius:10px;background:color-mix(in srgb, #4f7cff 3%, var(--dsw-alias-settings-card-fill))}',
+      '.dshp_deviceMain{display:flex;flex:1;flex-direction:column;gap:3px;min-width:0}',
+      '.dshp_deviceName{overflow-wrap:anywhere;font-weight:600}',
       '.dshp_detailsCard{padding:0}',
       '.dshp_details{padding:0}',
       '.dshp_detailsSummary{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:16px 20px;font-size:14px;line-height:20px;font-weight:600;cursor:pointer;list-style:none}',
@@ -98,6 +101,7 @@ window.__ModuleLoader__.load({
     const DISCONNECT_URL = '/phone-bridge/disconnect'
     const PIN_URL = '/phone-bridge/pin'
     const ROTATE_URL = '/phone-bridge/pairing/rotate'
+    const DEVICE_REMOVE_URL = '/phone-bridge/devices/remove'
     const POLL_MS = 2000
     const NOTICE_MS = 4000
     const noticeTimers = new Map()
@@ -898,7 +902,79 @@ window.__ModuleLoader__.load({
           ),
         )
 
-        return h('div', { className: 'dshp_root' }, header, publicCard, qrCard, securityCard, diagnosticsCard)
+        const deviceList = Array.isArray(state.devices) ? state.devices : []
+        const deviceTitle = (device) => {
+          const name = typeof device.name === 'string' ? device.name.trim() : ''
+          const platform = typeof device.platform === 'string' ? device.platform.trim() : ''
+          if (name && platform) return name + '（' + platform + '）'
+          if (name) return name
+          if (platform) return '未命名手机（' + platform + '）'
+          return '未命名手机 ' + String(device.deviceId || '').slice(0, 8)
+        }
+        const devicesCard = h(
+          'section',
+          { className: 'dshp_card', 'data-card': 'devices' },
+          h(
+            'div',
+            { className: 'dshp_cardHead' },
+            h(
+              'div',
+              { className: 'dshp_cardTitleRow' },
+              h('h3', { className: 'dshp_cardTitle' }, '已连接设备'),
+              helpTip('每台手机各有一条设备凭据，可以同时在线；这里显示最后在线时间与来源 IP。'),
+            ),
+            h(
+              'span',
+              { className: 'dshp_tag' + (deviceList.length === 0 ? ' dshp_tagMuted' : '') },
+              deviceList.length + ' 台',
+            ),
+          ),
+          deviceList.length === 0
+            ? h('p', { className: 'dshp_note' }, '还没有手机配对过，配好第一台后会出现在这里。')
+            : h(
+                'ul',
+                { className: 'dshp_list' },
+                ...deviceList.map((device) =>
+                  h(
+                    'li',
+                    { className: 'dshp_listItem dshp_deviceItem', key: device.deviceId },
+                    h(
+                      'div',
+                      { className: 'dshp_deviceMain' },
+                      h('span', { className: 'dshp_deviceName' }, deviceTitle(device)),
+                      h(
+                        'span',
+                        { className: 'dshp_note' },
+                        [device.lastIp || '未知 IP', device.region || '归属地未知'].join(' · '),
+                      ),
+                      h('span', { className: 'dshp_note' }, '最后在线：' + formatTime(device.lastSeenAt)),
+                    ),
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dshp_button',
+                        'data-action': 'remove-device',
+                        onClick: () =>
+                          perform(
+                            'remove:' + device.deviceId,
+                            'devices',
+                            DEVICE_REMOVE_URL,
+                            { deviceId: device.deviceId },
+                            '移除失败',
+                            '设备已移除。',
+                          ),
+                      },
+                      '移除',
+                    ),
+                  ),
+                ),
+              ),
+          renderError('devices'),
+          renderNotice('devices'),
+        )
+
+        return h('div', { className: 'dshp_root' }, header, publicCard, qrCard, devicesCard, securityCard, diagnosticsCard)
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause)
         return h(

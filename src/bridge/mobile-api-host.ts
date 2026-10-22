@@ -3,6 +3,7 @@ import { hostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
+import type { MobileDeviceRegistry } from './mobile-device-registry.js'
 
 export const MOBILE_API_PREFIX = '/api/mobile'
 export const MOBILE_API_V1_PREFIX = '/api/mobile/v1'
@@ -42,6 +43,14 @@ interface UpstreamModules {
   advertisedCandidates(port: number): unknown[]
   core: Record<string, any>
   pairingApproval: Record<string, any>
+  presentedCredential(request: IncomingMessage): string | null
+  credentials: UpstreamCredentials
+}
+
+/** 设备凭据库的只读视图：按凭据找设备、按设备吊销。 */
+interface UpstreamCredentials {
+  lookup(credential: string, instanceId: string): { deviceId?: unknown } | null
+  revokeDevice(instanceId: string, deviceId: string): number
 }
 
 export interface MobileApiHostOptions {
@@ -51,6 +60,7 @@ export interface MobileApiHostOptions {
   port(): number | undefined
   tunnel(): { active: boolean; url?: string; error?: string }
   protectedPorts(): Set<number>
+  devices?: MobileDeviceRegistry
   log?(message: string): void
 }
 
@@ -58,6 +68,7 @@ export interface MobileApiHost {
   readonly available: boolean
   readonly error?: string
   handle(request: IncomingMessage, response: ServerResponse, pathname?: string): Promise<boolean>
+  revokeDevice(deviceId: string): number
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean
   close(): void
 }
@@ -72,6 +83,18 @@ function requestPath(request: IncomingMessage): string {
   } catch {
     return '/'
   }
+}
+
+/** 手机的真实来源 IP：公网经 Cloudflare 时在 cf-connecting-ip，局域网直连看 socket。 */
+function clientAddress(request: IncomingMessage): string {
+  const header = (name: string): string | undefined => {
+    const raw = request.headers[name]
+    return Array.isArray(raw) ? raw[0] : raw
+  }
+  const forwarded = header('cf-connecting-ip') ?? header('x-forwarded-for')
+  if (forwarded) return forwarded.split(',')[0]!.trim()
+  const address = request.socket?.remoteAddress ?? ''
+  return address.startsWith('::ffff:') ? address.slice(7) : address
 }
 
 function writeJson(response: ServerResponse, status: number, body: unknown): void {
@@ -91,7 +114,7 @@ function loadUpstream(): UpstreamModules {
   const load = (file: string) => require(join(packageRoot, file))
   const mobileApi = load('lib/routes/mobile-api.js') as { registerMobileRoutes?: unknown }
   const routing = load('lib/http/routing.js') as { createGuarded?: unknown }
-  const auth = load('lib/mobile/auth.js') as { authorized?: unknown }
+  const auth = load('lib/mobile/auth.js') as { authorized?: unknown; presentedCredential?: unknown }
   const hostBridge = load('lib/mobile/host-bridge.js') as { createApiProxy?: unknown }
   const core = load('lib/relay/core.js') as Record<string, any>
   const status = load('lib/relay/status.js') as { hostMetadata?: unknown }
@@ -99,6 +122,7 @@ function loadUpstream(): UpstreamModules {
   const lanNetwork = load('lib/relay/lan-network.cjs') as { advertisedCandidates?: unknown }
   const pairingApproval = load('lib/relay/pairing-policy.js') as Record<string, any>
   const activity = load('lib/mobile/activity.cjs') as { note?: unknown }
+  const credentialsEntry = load('lib/shared/credentials-entry.js') as { credentialsEntry?: unknown }
 
   const required: Array<[string, unknown]> = [
     ['registerMobileRoutes', mobileApi.registerMobileRoutes],
@@ -110,7 +134,9 @@ function loadUpstream(): UpstreamModules {
     ['hostMetadata', status.hostMetadata],
     ['createPreviewService', preview.createPreviewService],
     ['advertisedCandidates', lanNetwork.advertisedCandidates],
-    ['activity.note', activity.note]
+    ['activity.note', activity.note],
+    ['presentedCredential', auth.presentedCredential],
+    ['credentialsEntry', credentialsEntry.credentialsEntry]
   ]
   for (const [name, value] of required) {
     if (typeof value !== 'function') throw new Error(`dsh-mobile-plugin 缺少移动 API 依赖：${name}`)
@@ -125,7 +151,9 @@ function loadUpstream(): UpstreamModules {
     createPreviewService: preview.createPreviewService as UpstreamModules['createPreviewService'],
     advertisedCandidates: lanNetwork.advertisedCandidates as UpstreamModules['advertisedCandidates'],
     core,
-    pairingApproval
+    pairingApproval,
+    presentedCredential: auth.presentedCredential as UpstreamModules['presentedCredential'],
+    credentials: (credentialsEntry.credentialsEntry as () => UpstreamCredentials)()
   }
 }
 
@@ -134,6 +162,9 @@ class EmbeddedMobileApiHost implements MobileApiHost {
   private readonly routes = new Map<string, RequestHandler>()
   private readonly upgrades = new Map<string, UpgradeHandler>()
   private readonly preview: { handleUpgrade: UpgradeHandler; close(): void }
+  private readonly state: Record<string, any>
+  private readonly credentials: UpstreamCredentials
+  private readonly presentedCredential: (request: IncomingMessage) => string | null
   private closed = false
 
   constructor(private readonly options: MobileApiHostOptions) {
@@ -148,6 +179,9 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     state.name = state.name || hostname()
     state.relayUrl = ''
     state.pairingPolicy = 'code'
+    this.state = state
+    this.credentials = upstream.credentials
+    this.presentedCredential = upstream.presentedCredential
 
     this.provideApiProxy(upstream)
 
@@ -191,7 +225,7 @@ class EmbeddedMobileApiHost implements MobileApiHost {
       lanPortInUse: () => options.port() ?? 0,
       preview: this.preview,
       core: upstream.core,
-      pairingApproval: upstream.pairingApproval
+      pairingApproval: this.pairingApproval(upstream.pairingApproval)
     })
 
     for (const requiredPath of [
@@ -206,6 +240,22 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     }
   }
 
+  /**
+   * 配对时把 App 自报的设备信息记进台账，再交给上游原有判定。
+   * 只在配对那一刻拿得到设备名与系统版本，之后的请求只有凭据。
+   */
+  private pairingApproval(upstream: Record<string, any>): Record<string, any> {
+    const devices = this.options.devices
+    if (!devices) return upstream
+    return {
+      ...upstream,
+      evaluate: (policy: unknown, device: unknown) => {
+        devices.rememberPairing(device)
+        return upstream.evaluate(policy, device)
+      }
+    }
+  }
+
   async handle(
     request: IncomingMessage,
     response: ServerResponse,
@@ -216,6 +266,7 @@ class EmbeddedMobileApiHost implements MobileApiHost {
       writeJson(response, 503, { ok: false, error: { code: 'unavailable', message: '移动 API 已关闭' } })
       return true
     }
+    this.noteDeviceActivity(request, pathname)
     if (pathname === `${MOBILE_API_V1_PREFIX}/pair` && !this.options.pinEnabled()) {
       writeJson(response, 409, {
         ok: false,
@@ -230,6 +281,23 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     }
     await handler(request, response)
     return true
+  }
+
+  /** 记录「哪台设备、从哪个 IP、什么时候」来过；凭据到设备由设备凭据库回答。 */
+  private noteDeviceActivity(request: IncomingMessage, pathname: string): void {
+    const devices = this.options.devices
+    if (!devices) return
+    if (pathname === `${MOBILE_API_V1_PREFIX}/health` || pathname === `${MOBILE_API_V1_PREFIX}/pair`) return
+    const credential = this.presentedCredential(request)
+    if (!credential) return
+    const record = this.credentials.lookup(credential, String(this.state.instanceId ?? ''))
+    const deviceId = record && typeof record.deviceId === 'string' ? record.deviceId : ''
+    if (!deviceId) return
+    devices.noteActivity(deviceId, clientAddress(request))
+  }
+
+  revokeDevice(deviceId: string): number {
+    return this.credentials.revokeDevice(String(this.state.instanceId ?? ''), deviceId)
   }
 
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean {
@@ -278,6 +346,7 @@ function unavailableHost(error: unknown, options: MobileApiHostOptions): MobileA
   return {
     available: false,
     error: message,
+    revokeDevice: () => 0,
     async handle(request, response) {
       if (!isMobileApiPath(requestPath(request))) return false
       writeJson(response, 503, {

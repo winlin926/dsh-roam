@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
 import { LanMobileBridge } from './bridge/lan-mobile-bridge.js'
+import { createMobileApiHost } from './bridge/mobile-api-host.js'
 import { createFilePairingPinStore } from './bridge/pairing-pin-store.js'
 import {
   migrateStoredInitialPin,
@@ -14,7 +15,7 @@ import {
 } from './bridge/public-url-settings.js'
 
 export const name = 'dsh-roam'
-export const inject = ['webServer', 'connection']
+export const inject = ['webServer', 'connection', 'sessions', 'typertGateway']
 
 const PORT_START = 43128
 const PUBLIC_URL_PROBE_TIMEOUT_MS = 12000
@@ -479,16 +480,43 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => {
     let instance
+    let mobileApi
+    const pinFileExisted = existsSync(pinFile)
     const ready = (async () => {
       const port = config.port ?? await choosePort(PORT_START)
       const logos = brandLogoPaths()
+      const pinStore = createFilePairingPinStore(pinFile)
+      mobileApi = createMobileApiHost({
+        ctx,
+        pin: () => instance?.pairingPin(),
+        pinEnabled: () => instance?.pairingPinEnabled() === true,
+        port: () => instance?.localPort(),
+        tunnel: () => {
+          const snapshot = instance?.snapshot()
+          return {
+            active: snapshot?.tunnelActive === true,
+            ...(snapshot?.tunnelUrl ? { url: snapshot.tunnelUrl } : {}),
+            ...(snapshot?.tunnelError ? { error: snapshot.tunnelError } : {}),
+          }
+        },
+        protectedPorts: () => {
+          const ports = new Set()
+          const hostPort = Number(ctx.webServer?.port)
+          if (Number.isInteger(hostPort) && hostPort > 0) ports.add(hostPort)
+          const bridgePort = instance?.localPort()
+          if (Number.isInteger(bridgePort) && bridgePort > 0) ports.add(bridgePort)
+          return ports
+        },
+        log: (message) => ctx.logger?.warn?.(message),
+      })
       instance = new LanMobileBridge({
         port,
         harnessUrl: () => harnessOrigin(ctx.webServer),
         harnessAuthToken: () => launchToken(ctx.connection, harnessOrigin(ctx.webServer)),
+        mobileApi,
         locale: 'zh',
         cloudflaredCacheDir: CACHE_DIR,
-        pairingPinStore: createFilePairingPinStore(pinFile),
+        pairingPinStore: pinStore,
         publicUrl: () => runtime.publicUrl ?? undefined,
         frameAncestors: () => {
           const origin = harnessOrigin(ctx.webServer)
@@ -503,6 +531,7 @@ export function apply(ctx, config = {}) {
       })
       holder.bridge = instance
       await migrateStoredInitialPin(settingsFile, (pin) => instance.setDurablePin(pin))
+      if (!pinFileExisted && mobileApi.available && !instance.pairingPinEnabled()) instance.setPinConsent(true)
       await instance.start()
     })()
     ready.catch((error) => {
@@ -513,6 +542,7 @@ export function apply(ctx, config = {}) {
       holder.bridge = undefined
       await ready.catch(() => undefined)
       if (instance) await instance.stop()
+      mobileApi?.close()
     }
   }, 'dsh-roam')
 }

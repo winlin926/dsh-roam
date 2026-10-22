@@ -24,7 +24,7 @@ import {
   renderPairingPinPage
 } from './lan-mobile-pages.js'
 import type { PairingPinState, PairingPinStore } from './pairing-pin-store.js'
-import { isMobileApiPath, proxyMobileApi } from './mobile-api-proxy.js'
+import { isMobileApiPath, type MobileApiHost } from './mobile-api-host.js'
 
 const MAX_BODY_BYTES = 64 * 1024
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -99,6 +99,7 @@ export interface LanMobileBridgeOptions {
   harnessUrl(): string | undefined
   /** Per-process Harness launch token, traded once for a session cookie. */
   harnessAuthToken?(): string | undefined
+  mobileApi?: MobileApiHost
   locale?: 'en' | 'zh' | (() => 'en' | 'zh')
   brandLogoPaths?: { light: string; dark: string }
   appIconPath?: string
@@ -220,6 +221,19 @@ export class LanMobileBridge {
     this.now = options.now ?? Date.now
   }
 
+  localPort(): number | undefined {
+    return this.port
+  }
+
+  pairingPin(): string | undefined {
+    const view = this.readPairingPin()
+    return view.consent ? view.pin : undefined
+  }
+
+  pairingPinEnabled(): boolean {
+    return this.storedPinState().pinConsent === true
+  }
+
   createDesktopUrl(): string | undefined {
     if (!this.server || !this.port) return undefined
     // The settings page re-reads this URL on every poll before the browser
@@ -251,6 +265,10 @@ export class LanMobileBridge {
         // reconnect, or disconnect. Reconciling here keeps the mux monitor and
         // the renderers in step without polling either of them.
         .finally(() => this.syncConnected())
+    })
+    this.server.on('upgrade', (request, socket, head) => {
+      if (this.options.mobileApi?.handleUpgrade(request, socket, head)) return
+      socket.destroy()
     })
     await new Promise<void>((resolve, reject) => {
       this.server?.once('error', reject)
@@ -287,6 +305,7 @@ export class LanMobileBridge {
     this.clearPinFailures()
     this.clearTunnelDeathFlags()
     this.tunnelExpiresAt = undefined
+    this.options.mobileApi?.close()
     for (const abort of this.sessionStreamAborts) abort.abort()
     this.sessionStreamAborts.clear()
     this.syncConnected()
@@ -766,30 +785,20 @@ export class LanMobileBridge {
         : transportAddress
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
 
-    // The dsh-mobile API lives on the Harness and authenticates with its own
-    // device credential; the phone app calls it through this same public entry,
-    // so it bypasses the pairing gate. Nothing else is relayed.
+    // AI-HUB speaks its own protocol with a device credential. It reaches the
+    // embedded mobile API through the same public entry as the browser page,
+    // but does not use the browser pairing gate.
     if (isMobileApiPath(url.pathname)) {
       response.removeHeader('content-security-policy')
       response.removeHeader('x-frame-options')
-      const base = this.options.harnessUrl()
-      return proxyMobileApi({
-        request,
-        response,
-        url,
-        upstreamBase: base,
-        ...(base === undefined
-          ? {}
-          : {
-              session: {
-                cookie: () => this.harnessSession(base),
-                refresh: () => {
-                  this.harnessCookie = undefined
-                  return this.harnessSession(base)
-                }
-              }
-            })
-      })
+      if (!this.options.mobileApi) {
+        return this.json(response, 503, {
+          ok: false,
+          error: 'AI-HUB mobile API is unavailable.'
+        })
+      }
+      await this.options.mobileApi.handle(request, response)
+      return
     }
 
     if (request.method === 'GET' && url.pathname.startsWith('/brand-logo/')) {

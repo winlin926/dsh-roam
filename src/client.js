@@ -494,7 +494,7 @@ window.__ModuleLoader__.load({
                       'div',
                       { className: 'dshp_labelRow' },
                       h('span', { className: 'dshp_label' }, '连接密码'),
-                      helpTip('公网入口需要此密码；修改后已连接的手机需重新输入。'),
+                      helpTip('浏览器公网入口和 AI-HUB 共用此密码；修改后已连接的手机需重新输入。'),
                     ),
                     h(
                       'div',
@@ -757,7 +757,7 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dshp_cardTitleRow' },
               h('h3', { className: 'dshp_cardTitle' }, '连接密码'),
-              helpTip('用于公网入口；修改后已连接的手机需重新输入。'),
+              helpTip('浏览器公网入口和 AI-HUB 共用；修改后已连接的手机需重新输入。'),
             ),
           ),
           h(
@@ -807,7 +807,7 @@ window.__ModuleLoader__.load({
               ),
             ),
             pinDraftInvalid
-              ? h('p', { className: 'dshp_error' }, '连接密码必须是 6 位数字（可留空使用随机密码）。')
+              ? h('p', { className: 'dshp_error' }, '连接密码必须是 6 位数字；AI-HUB 配对需要固定密码。')
               : null,
             state.pinConsent === true
               ? h(

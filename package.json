@@ -1,7 +1,7 @@
 {
   "name": "dsh-roam",
-  "version": "0.1.0",
-  "description": "把电脑上的 DeepSeek Harness 会话漫游到手机：扫码即可在手机浏览器继续当前对话，同一 Wi-Fi 内直连，也能通过公网入口在外远程访问，无需安装 App。",
+  "version": "0.2.0",
+  "description": "把电脑上的 DeepSeek Harness 会话漫游到手机：浏览器扫码即用，AI-HUB App 共用同一地址和配对码。",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -22,13 +22,17 @@
     "remote",
     "手机扫码",
     "手机继续会话",
-    "远程访问"
+    "远程访问",
+    "AI-HUB",
+    "ai-hub"
   ],
   "files": [
     "lib/**/*.js",
     "assets",
     "cordis.patch.yml",
-    "LICENSE"
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
@@ -37,6 +41,7 @@
     "prepack": "pnpm build"
   },
   "dependencies": {
+    "dsh-mobile-plugin": "0.1.92",
     "qrcode": "1.5.4",
     "ws": "8.18.0"
   },

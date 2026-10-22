@@ -18,9 +18,10 @@
 
 ### 用 AI-HUB 手机 App 连同一个地址
 
-装了 dsh-mobile-plugin 和 AI-HUB 之后，协议选 `https`，地址填同一个域名（例如 `dsh.sanlin.xin`），
-配对码填 DSH 里「设置 → 移动端」显示的 6 位数字。浏览器页面和 App 共用这条公网入口：
-`/api/mobile/*` 会被原样转给宿主上的 dsh-mobile，鉴权由它自己的设备凭据负责。
+不需要另装或启用 dsh-mobile-plugin。打开 AI-HUB，协议选 `https`，地址填同一个域名
+（例如 `dsh.sanlin.xin`），配对码填面板上显示的 6 位连接密码。浏览器页面和 App
+共用同一个地址、同一个配对码；`/api/mobile/*` 由 dsh-roam 内嵌的移动 API 直接处理，
+设备凭据和旧版 dsh-mobile 配对记录继续有效。
 
 ## 工作原理
 
@@ -28,7 +29,7 @@
 - 手机页面通过 WebSocket 连回 DSH 主机，配对令牌写在二维码里；令牌过期或已用完时，面板会换一张新码。
 - 公网入口优先用 cloudflared 快速隧道（首次启用会把 cloudflared 下载到数据目录），失败时可以切到 pinggy 兜底。
 - 设置面板读写的 `/phone-bridge/*` 路由是回环专属，并且校验同源，避免别的网页诱导本机开隧道或改密码。
-- `/api/mobile/*` 原样转给宿主，交给 dsh-mobile 自己验设备凭据；其余路径仍然走本插件的配对闸门。宿主端口每次启动都会变，所以转发按当前宿主地址算，不需要配置。
+- `/api/mobile/*` 由 dsh-roam 内嵌的 dsh-mobile 移动 API 处理，使用设备凭据鉴权；其余路径仍然走本插件的配对闸门。不会启动 dsh-mobile 的 sidecar、relay 或 18787 端口。
 
 ## 数据与端口
 
@@ -36,7 +37,8 @@
 | --- | --- |
 | 数据目录 | `%USERPROFILE%\.dsh\dsh-roam`（设置了 `DSH_HOME` 时跟随它） |
 | `settings.json` | 固定公网域名等设置 |
-| `mobile-pairing-pin.json` | 连接密码与是否启用 |
+| `mobile-pairing-pin.json` | 浏览器与 AI-HUB 共用的固定 6 位连接密码 |
+| `relay.json` / `relay-device-credentials.json` | 兼容旧 dsh-mobile 的实例身份与设备凭据，升级后保留已配对设备 |
 | `bin/` | 下载的 cloudflared |
 | 端口 | 默认 43128，占用时自动顺延，面板显示实际端口 |
 

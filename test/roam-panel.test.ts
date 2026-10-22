@@ -208,6 +208,20 @@ describe('phone bridge settings panel', () => {
     ])
   })
 
+  it('shows the certificate row with an issue button once the public URL is fixed', () => {
+    const panel = render(
+      statePayload({
+        publicUrl: 'https://dsh.example.com',
+        publicUrlConfigured: true,
+        certificate: { domain: 'dsh.example.com', selfSigned: true, pending: false },
+      }),
+    )
+    expect(textOf(panel)).toContain('只有 frpc 自签证书')
+    const issue = elements(panel).find((element) => element.props['data-action'] === 'issue-certificate')
+    expect(issue).toBeTruthy()
+    expect(textOf(issue)).toContain('申请证书')
+  })
+
   it('renders the six cards and the header pill for the ready state', () => {
     const panel = render(statePayload())
     expect(tipOf(panel, '局域网直连：同一 Wi-Fi')).toBeTruthy()

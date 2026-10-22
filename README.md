@@ -38,7 +38,7 @@
 | 数据目录 | `%USERPROFILE%\.dsh\dsh-roam`（设置了 `DSH_HOME` 时跟随它） |
 | `settings.json` | 固定公网域名等设置 |
 | `mobile-pairing-pin.json` | 浏览器与 AI-HUB 共用的固定 6 位连接密码 |
-| `relay.json` / `relay-device-credentials.json` | 兼容旧 dsh-mobile 的实例身份与设备凭据，升级后保留已配对设备 |
+| `relay.json` / `relay-device-credentials.json` | `%USERPROFILE%\.dsh\` 下的兼容身份与设备凭据，升级后保留已配对设备 |
 | `bin/` | 下载的 cloudflared |
 | 端口 | 默认 43128，占用时自动顺延，面板显示实际端口 |
 
@@ -58,6 +58,8 @@ pnpm test    # 先 build，再跑全部测试
 ```
 
 约定：`src/` 是唯一源码；`lib/` 只由构建生成；测试跑构建产物，所以构建失败等于测试失败。
+
+`dsh-mobile-plugin@0.1.92` 是内部运行依赖，只提供 AI-HUB 的移动 API 路由和凭据实现；不要在 DSH profile 里单独启用它。上游模块的兼容边界集中在 `src/bridge/mobile-api-host.ts`，升级版本前先跑契约测试。
 
 `src/client.js` 由 DSH 当普通 `<script>` 加载，必须保持经典脚本：一旦被编译进 `export {}`，浏览器会直接抛 `Unexpected token 'export'`，设置页整块白屏。因此它不参与 tsc 编译，构建时原样复制，`test/browser-client.test.ts` 守住“产物与源码逐字节一致、且不含顶层模块语法”。
 

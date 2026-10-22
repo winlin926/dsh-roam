@@ -16,6 +16,7 @@ import {
   type InternetTunnelInstance,
   type InternetTunnelProvider
 } from './internet-tunnel.js'
+import { ACME_CHALLENGE_PREFIX } from './acme-certificate.js'
 import { startPinggyTunnel } from './pinggy-tunnel.js'
 import {
   renderDesktopPairingPage,
@@ -129,6 +130,8 @@ export interface LanMobileBridgeOptions {
   frameAncestors?: string | (() => string | undefined)
   /** Validated fixed public origin; when present it leads every pairing URL. */
   publicUrl?: () => string | undefined
+  /** HTTP-01 挑战文件目录：公网入口必须能取到它，证书才签得下来。 */
+  acmeChallengeDir?: () => string | undefined
 }
 
 export interface LanMobileBridgeSnapshot {
@@ -790,6 +793,11 @@ export class LanMobileBridge {
         ? normalizeRemoteAddress(forwardedAddress)
         : transportAddress
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
+
+    // Let's Encrypt 直接在 80 端口上取验证文件，必须排在配对闸门之前响应。
+    if (url.pathname.startsWith(ACME_CHALLENGE_PREFIX)) {
+      return this.serveAcmeChallenge(url.pathname, response)
+    }
 
     // AI-HUB 的配对端点。公网入口和局域网入口是同一台宿主的同一件事，交给移动 API 的
     // 配对路由；落到下面的浏览器配对闸门只会拿到 401 文本。
@@ -1840,6 +1848,22 @@ export class LanMobileBridge {
     })
     if (settled.ok) this.pendingQuestions.delete(eventId)
     return settled
+  }
+
+  /** 只回放挑战目录里的单层文件名，路径穿越和目录列表都不在考虑之内。 */
+  private async serveAcmeChallenge(pathname: string, response: ServerResponse): Promise<void> {
+    const directory = this.options.acmeChallengeDir?.()
+    const name = pathname.slice(ACME_CHALLENGE_PREFIX.length)
+    if (!directory || !/^[A-Za-z0-9_-]{1,128}$/.test(name)) return this.text(response, 404, 'Not found.')
+    try {
+      const body = await readFile(join(directory, name))
+      response.statusCode = 200
+      response.setHeader('content-type', 'text/plain; charset=utf-8')
+      response.setHeader('cache-control', 'no-store')
+      response.end(body)
+    } catch {
+      this.text(response, 404, 'Not found.')
+    }
   }
 
   private html(response: ServerResponse, body: string): void {

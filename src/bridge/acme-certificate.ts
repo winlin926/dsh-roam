@@ -1,0 +1,192 @@
+import { X509Certificate } from 'node:crypto'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import * as acme from 'acme-client'
+
+/**
+ * 公网入口的证书：通过 80 端口的 HTTP 隧道完成 Let's Encrypt 的 HTTP-01 验证，
+ * 把签发结果按 frpc 的约定写成 `<域名>.crt` / `<域名>.key`，由 frpc 在 443 上使用。
+ */
+
+export const ACME_CHALLENGE_PREFIX = '/.well-known/acme-challenge/'
+
+/** 证书剩不到 30 天就续期：Let's Encrypt 有效期 90 天，留出足够重试余量。 */
+const RENEW_BEFORE_MS = 30 * 24 * 60 * 60 * 1000
+/** 运行时每 12 小时检查一次，够用且不至于频繁碰 ACME 服务端。 */
+const RENEW_INTERVAL_MS = 12 * 60 * 60 * 1000
+
+export interface CertificateStatus {
+  domain?: string
+  certificatePath?: string
+  keyPath?: string
+  expiresAt?: number
+  renewAt?: number
+  pending: boolean
+  error?: string
+}
+
+export interface CertificateManagerOptions {
+  /** 要签发的域名；固定公网域名没配时返回 undefined。 */
+  domain(): string | undefined
+  /** ACME 账户私钥与挑战文件的状态目录。 */
+  stateDir: string
+  /** HTTP-01 挑战文件目录，由桥在 80 端口上原样返回。 */
+  challengeDir: string
+  /** 证书落地目录，frpc 从这里加载。 */
+  deployDir: string
+  directoryUrl?: string
+  now?(): number
+  log?(message: string): void
+  /** 测试注入：默认走 Let's Encrypt 的 HTTP-01。 */
+  issue?(request: { domain: string; challengeDir: string }): Promise<{ certificate: string; key: string }>
+}
+
+export interface CertificateManager {
+  status(): Promise<CertificateStatus>
+  ensure(): Promise<CertificateStatus>
+  startAutoRenew(): void
+  stop(): void
+}
+
+/** 读一张 PEM 证书的到期时间；文件缺失或解析失败都返回 undefined。 */
+export async function readCertificateExpiry(path: string): Promise<number | undefined> {
+  try {
+    const pem = await readFile(path, 'utf8')
+    return Date.parse(new X509Certificate(pem).validTo) || undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function createCertificateManager(options: CertificateManagerOptions): CertificateManager {
+  const now = options.now ?? Date.now
+  let pending = false
+  let lastError: string | undefined
+  let running: Promise<CertificateStatus> | undefined
+  let timer: ReturnType<typeof setInterval> | undefined
+
+  const paths = (domain: string) => ({
+    certificatePath: join(options.deployDir, `${domain}.crt`),
+    keyPath: join(options.deployDir, `${domain}.key`)
+  })
+
+  async function status(): Promise<CertificateStatus> {
+    const domain = options.domain()
+    if (!domain) return { pending, ...(lastError ? { error: lastError } : {}) }
+    const target = paths(domain)
+    const expiresAt = await readCertificateExpiry(target.certificatePath)
+    return {
+      domain,
+      ...target,
+      ...(expiresAt ? { expiresAt, renewAt: expiresAt - RENEW_BEFORE_MS } : {}),
+      pending,
+      ...(lastError ? { error: lastError } : {})
+    }
+  }
+
+  async function ensureOnce(): Promise<CertificateStatus> {
+    const domain = options.domain()
+    if (!domain) throw new Error('还没有配置固定公网域名。')
+    const current = await status()
+    if (current.expiresAt && current.expiresAt - now() > RENEW_BEFORE_MS) return current
+    pending = true
+    try {
+      const issued = options.issue
+        ? await options.issue({ domain, challengeDir: options.challengeDir })
+        : await requestCertificate({
+            domain,
+            challengeDir: options.challengeDir,
+            stateDir: options.stateDir,
+            directoryUrl: options.directoryUrl
+          })
+      const target = paths(domain)
+      await writeAtomic(target.certificatePath, issued.certificate)
+      await writeAtomic(target.keyPath, issued.key, 0o600)
+      lastError = undefined
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+      options.log?.(`证书签发失败：${lastError}`)
+      throw error
+    } finally {
+      pending = false
+    }
+    return status()
+  }
+
+  function ensure(): Promise<CertificateStatus> {
+    if (!running) {
+      running = ensureOnce().finally(() => {
+        running = undefined
+      })
+    }
+    return running
+  }
+
+  return {
+    status,
+    ensure,
+    startAutoRenew() {
+      if (timer) return
+      timer = setInterval(() => {
+        void ensure().catch(() => undefined)
+      }, RENEW_INTERVAL_MS)
+      timer.unref?.()
+    },
+    stop() {
+      if (!timer) return
+      clearInterval(timer)
+      timer = undefined
+    }
+  }
+}
+
+/** 走 Let's Encrypt 的 HTTP-01：挑战文件写在 webroot 里，桥在 80 端口上返回它。 */
+async function requestCertificate(request: {
+  domain: string
+  challengeDir: string
+  stateDir: string
+  directoryUrl?: string
+}): Promise<{ certificate: string; key: string }> {
+  const accountKey = await readOrCreateAccountKey(request.stateDir)
+  const client = new acme.Client({
+    directoryUrl: request.directoryUrl ?? acme.directory.letsencrypt.production,
+    accountKey
+  })
+  await client.createAccount({ termsOfServiceAgreed: true })
+  const [key, csr] = await acme.crypto.createCsr({
+    commonName: request.domain,
+    altNames: [request.domain]
+  })
+  const certificate = await client.auto({
+    csr,
+    termsOfServiceAgreed: true,
+    challengePriority: ['http-01'],
+    challengeCreateFn: async (_authorization, challenge, keyAuthorization) => {
+      await mkdir(request.challengeDir, { recursive: true })
+      await writeFile(join(request.challengeDir, challenge.token), keyAuthorization)
+    },
+    challengeRemoveFn: async (_authorization, challenge) => {
+      await unlink(join(request.challengeDir, challenge.token)).catch(() => undefined)
+    }
+  })
+  return { certificate, key: key.toString() }
+}
+
+async function readOrCreateAccountKey(stateDir: string): Promise<Buffer> {
+  const path = join(stateDir, 'acme-account.key')
+  try {
+    return await readFile(path)
+  } catch {
+    await mkdir(stateDir, { recursive: true })
+    const key = await acme.crypto.createPrivateKey()
+    await writeAtomic(path, key, 0o600)
+    return key
+  }
+}
+
+async function writeAtomic(path: string, body: string | Buffer, mode = 0o644): Promise<void> {
+  await mkdir(join(path, '..'), { recursive: true })
+  const temporary = `${path}.${process.pid}.tmp`
+  await writeFile(temporary, body, { mode })
+  await rename(temporary, path)
+}

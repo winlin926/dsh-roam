@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
 import { LanMobileBridge, isPrivateAddress } from './bridge/lan-mobile-bridge.js'
 import { createMobileApiHost } from './bridge/mobile-api-host.js'
+import { createCertificateManager } from './bridge/acme-certificate.js'
 import { createMobileDeviceRegistry } from './bridge/mobile-device-registry.js'
 import { createIpRegionResolver, ipRegionDirectory } from './bridge/ip-region.js'
 import { createFilePairingPinStore } from './bridge/pairing-pin-store.js'
@@ -26,6 +27,15 @@ const CACHE_DIR = join(DATA_DIR, 'bin')
 const PIN_FILE = join(DATA_DIR, 'mobile-pairing-pin.json')
 const DEVICES_FILE = join(DATA_DIR, 'mobile-devices.json')
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json')
+const ACME_STATE_DIR = join(DATA_DIR, 'acme')
+const ACME_CHALLENGE_DIR = join(ACME_STATE_DIR, 'challenge')
+/** frpc 的工作目录：`<域名>.crt` / `<域名>.key` 放这里，隧道重启后生效。 */
+const FRPC_CERTIFICATE_DIR = join(
+  process.env.ProgramData ?? 'C:\\ProgramData',
+  'SakuraFrpService',
+  'FrpcWorkingDirectory',
+)
+const CERTIFICATE_PATH = '/phone-bridge/certificate'
 const DESKTOP_URL_PATH = '/phone-bridge/desktop-url'
 const STATE_PATH = '/phone-bridge/state'
 const SETTINGS_PATH = '/phone-bridge/settings'
@@ -60,6 +70,16 @@ function publicAddress(address) {
   if (typeof address !== 'string') return undefined
   const value = address.startsWith('::ffff:') ? address.slice(7) : address
   return isPrivateAddress(value) ? undefined : value
+}
+
+/** 固定公网域名的主机名：证书只为它签发。 */
+function publicDomain(publicUrl) {
+  if (typeof publicUrl !== 'string') return undefined
+  try {
+    return new URL(publicUrl).hostname || undefined
+  } catch {
+    return undefined
+  }
 }
 
 function choosePort(start) {
@@ -186,6 +206,7 @@ function idleState(publicUrl = null, lastPublicUrlCheck = null, expectedPort = P
     pinExpiresAt: null,
     expiresAt: null,
     devices: [],
+    certificate: null,
     publicUrl,
     publicUrlConfigured: publicUrl !== null,
     mode: publicUrl ? 'fixed' : 'lan',
@@ -238,6 +259,7 @@ async function bridgeState(bridge, runtime) {
     pinExpiresAt: pins.pinExpiresAt ?? null,
     expiresAt: snapshot.expiresAt ?? null,
     devices: runtime?.devices?.() ?? [],
+    certificate: runtime?.certificate ? await runtime.certificate() : null,
     publicUrl,
     publicUrlConfigured: publicUrl !== null,
     mode: publicUrl ? 'fixed' : snapshot.tunnelActive === true ? 'tunnel' : 'lan',
@@ -493,6 +515,18 @@ export function apply(ctx, config = {}) {
       })
     },
   }
+  const certificates = createCertificateManager({
+    domain: () => publicDomain(runtime.publicUrl),
+    stateDir: ACME_STATE_DIR,
+    challengeDir: ACME_CHALLENGE_DIR,
+    deployDir: config.frpcCertificateDir ?? FRPC_CERTIFICATE_DIR,
+    log: (message) => console.warn('dsh-roam: ' + message),
+  })
+  runtime.certificate = () => certificates.status()
+  ctx.effect(() => {
+    certificates.startAutoRenew()
+    return () => certificates.stop()
+  }, 'dsh-roam certificate renewal')
   const checkPublicUrl =
     typeof config.probePublicUrl === 'function' ? config.probePublicUrl : probePublicUrl
 
@@ -530,6 +564,16 @@ export function apply(ctx, config = {}) {
   }, 'dsh-roam desktop url')
 
   registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, (deviceId) => mobileApiHolder.current?.revokeDevice(deviceId) ?? 0)
+
+  registerLoopbackRoute(ctx, 'certificate', 'POST', CERTIFICATE_PATH, async (request, response) => {
+    if (!publicDomain(runtime.publicUrl)) {
+      return writeJson(response, 400, result(false, '请先保存固定公网域名。', await bridgeState(bridge(), runtime)))
+    }
+    // 签发要等 Let's Encrypt 回取验证文件，几十秒都可能；面板每两秒轮询，
+    // 让请求立刻返回 pending，结果从状态里读，比把浏览器请求挂住更稳。
+    void certificates.ensure().catch(() => undefined)
+    writeJson(response, 200, result(true, '正在申请证书，稍后在这里看结果。', await bridgeState(bridge(), runtime)))
+  })
 
   ctx.effect(() => {
     let instance
@@ -571,6 +615,7 @@ export function apply(ctx, config = {}) {
         cloudflaredCacheDir: CACHE_DIR,
         pairingPinStore: pinStore,
         publicUrl: () => runtime.publicUrl ?? undefined,
+        acmeChallengeDir: () => ACME_CHALLENGE_DIR,
         frameAncestors: () => {
           const origin = harnessOrigin(ctx.webServer)
           if (!origin) return undefined

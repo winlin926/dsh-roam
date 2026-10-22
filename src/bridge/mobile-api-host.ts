@@ -93,8 +93,14 @@ function clientAddress(request: IncomingMessage): string {
     const raw = request.headers[name]
     return Array.isArray(raw) ? raw[0] : raw
   }
-  const forwarded = header('cf-connecting-ip') ?? header('x-forwarded-for')
-  if (forwarded) return forwarded.split(',')[0]!.trim()
+  const cloudflare = header('cf-connecting-ip')
+  if (cloudflare) return cloudflare.trim()
+  // 代理会把真实来源追加到末尾，前面的内容请求方可以随便写：只信最后一跳。
+  const forwarded = header('x-forwarded-for')
+  if (forwarded) {
+    const hops = forwarded.split(',')
+    return hops[hops.length - 1]!.trim()
+  }
   const address = request.socket?.remoteAddress ?? ''
   return address.startsWith('::ffff:') ? address.slice(7) : address
 }

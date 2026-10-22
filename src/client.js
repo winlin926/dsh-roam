@@ -104,6 +104,7 @@ window.__ModuleLoader__.load({
     const PIN_URL = '/phone-bridge/pin'
     const ROTATE_URL = '/phone-bridge/pairing/rotate'
     const DEVICE_REMOVE_URL = '/phone-bridge/devices/remove'
+    const CERTIFICATE_URL = '/phone-bridge/certificate'
     const POLL_MS = 2000
     const NOTICE_MS = 4000
     const noticeTimers = new Map()
@@ -397,6 +398,9 @@ window.__ModuleLoader__.load({
           : '局域网地址：仅限同一 Wi-Fi，不经过公网，无需密码。'
         const pin = state.pairingPin ? String(state.pairingPin) : '------'
         const lastCheck = state.lastPublicUrlCheck && typeof state.lastPublicUrlCheck === 'object' ? state.lastPublicUrlCheck : null
+        const certificate = state.certificate && typeof state.certificate === 'object' ? state.certificate : null
+        const certificateExpired =
+          certificate && typeof certificate.expiresAt === 'number' ? certificate.expiresAt <= Date.now() : false
         const bridgePort = Number.isInteger(state.bridgePort) ? state.bridgePort : null
         const expectedPort = Number.isInteger(state.expectedPort) ? state.expectedPort : 43128
         const portMismatch = state.portMatchesTunnel === false || (bridgePort !== null && bridgePort !== expectedPort)
@@ -666,6 +670,44 @@ window.__ModuleLoader__.load({
               testDisabled ? '检测中…' : '检测连通性',
             ),
           ),
+          certificate && publicUrlConfigured
+            ? h(
+                'div',
+                { className: 'dshp_statusRow' },
+                h(
+                  'span',
+                  { className: 'dshp_checkState' + (certificateExpired ? ' dshp_danger' : '') },
+                  certificateExpired
+                    ? '证书已过期'
+                    : typeof certificate.expiresAt === 'number'
+                      ? '证书有效至 ' + formatTime(certificate.expiresAt)
+                      : '未申请证书',
+                ),
+                h('span', { className: 'dshp_note' }, certificate.pending ? '正在签发…' : '经 80 端口隧道自动续期'),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dshp_button',
+                    'data-action': 'issue-certificate',
+                    disabled: certificate.pending === true,
+                    onClick: () =>
+                      perform(
+                        'certificate',
+                        'public',
+                        CERTIFICATE_URL,
+                        {},
+                        '证书签发失败',
+                        '正在申请证书，稍后在这里看结果。',
+                      ),
+                  },
+                  typeof certificate.expiresAt === 'number' ? '立即续期' : '申请证书',
+                ),
+              )
+            : null,
+          certificate && typeof certificate.error === 'string' && certificate.error
+            ? h('p', { className: 'dshp_error' }, '证书错误：' + certificate.error)
+            : null,
           h(
             'div',
             { className: 'dshp_statusRow' },

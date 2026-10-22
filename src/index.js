@@ -525,7 +525,13 @@ export function apply(ctx, config = {}) {
   const ensureIpRegionInstalled = () => {
     if (ipRegionInstallStarted) return
     ipRegionInstallStarted = true
-    void ipRegion.ensureInstalled().catch(() => undefined)
+    void ipRegion.ensureInstalled()
+      .then((installed) => {
+        if (!installed) ipRegionInstallStarted = false
+      })
+      .catch(() => {
+        ipRegionInstallStarted = false
+      })
   }
   const holder = { bridge: undefined }
   const bridge = () => holder.bridge
@@ -607,7 +613,7 @@ export function apply(ctx, config = {}) {
     }
     // 签发要等 Let's Encrypt 回取验证文件，几十秒都可能；面板每两秒轮询，
     // 让请求立刻返回 pending，结果从状态里读，比把浏览器请求挂住更稳。
-    void certificates.ensure().catch(() => undefined)
+    void certificates.ensure(true).catch(() => undefined)
     writeJson(response, 200, result(true, '正在申请证书，稍后在这里看结果。', await bridgeState(bridge(), runtime)))
   })
 

@@ -3,6 +3,13 @@
   "version": "0.2.1",
   "description": "把电脑上的 DeepSeek Harness 会话漫游到手机：浏览器扫码即用，AI-HUB App 共用同一地址和配对码。",
   "license": "MIT",
+  "author": {
+    "name": "winlin926",
+    "email": "l1240235604@163.com"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "lib/index.js",
   "exports": {

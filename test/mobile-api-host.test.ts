@@ -1,5 +1,5 @@
-import { afterAll, afterEach, describe, expect, it } from 'vitest'
-import { createServer, request as httpRequest } from 'node:http'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { createServer, request as httpRequest, type ServerResponse } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -118,6 +118,21 @@ describe('embedded mobile API', () => {
       service: 'dsh-mobile-plugin',
       apiVersion: '1'
     })
+  })
+
+  it('destroys the device stream when the device is removed', async () => {
+    const { host } = await startBridge('246810')
+    const destroy = vi.fn()
+    const response = { destroy } as unknown as ServerResponse
+    const internals = host as unknown as {
+      deviceStreams: Map<string, Set<ServerResponse>>
+      streamingDevices: Map<string, number>
+    }
+    internals.deviceStreams.set('device-1', new Set([response]))
+    internals.streamingDevices.set('device-1', 1)
+    host.disconnectDevice('device-1')
+    expect(destroy).toHaveBeenCalledTimes(1)
+    expect(host.onlineDeviceIds().size).toBe(0)
   })
 
   it('uses the dsh-roam PIN for pairing and accepts the issued device credential', async () => {

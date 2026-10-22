@@ -45,7 +45,7 @@ export interface CertificateManagerOptions {
 
 export interface CertificateManager {
   status(): Promise<CertificateStatus>
-  ensure(): Promise<CertificateStatus>
+  ensure(force?: boolean): Promise<CertificateStatus>
   startAutoRenew(): void
   stop(): void
 }
@@ -70,7 +70,7 @@ export async function readDeployedCertificate(path: string): Promise<DeployedCer
 export function createCertificateManager(options: CertificateManagerOptions): CertificateManager {
   const now = options.now ?? Date.now
   let pending = false
-  let lastError: string | undefined
+  let lastError: { message: string; domain: string } | undefined
   let running: Promise<CertificateStatus> | undefined
   let timer: ReturnType<typeof setInterval> | undefined
 
@@ -81,24 +81,25 @@ export function createCertificateManager(options: CertificateManagerOptions): Ce
 
   async function status(): Promise<CertificateStatus> {
     const domain = options.domain()
-    if (!domain) return { selfSigned: false, pending, ...(lastError ? { error: lastError } : {}) }
+    if (!domain) return { selfSigned: false, pending }
     const target = paths(domain)
     const deployed = await readDeployedCertificate(target.certificatePath)
+    const error = lastError?.domain === domain ? lastError.message : undefined
     return {
       domain,
       ...target,
       ...(deployed ? { expiresAt: deployed.expiresAt, renewAt: deployed.expiresAt - RENEW_BEFORE_MS } : {}),
       selfSigned: deployed?.selfSigned === true,
       pending,
-      ...(lastError ? { error: lastError } : {})
+      ...(error ? { error } : {})
     }
   }
 
-  async function ensureOnce(): Promise<CertificateStatus> {
+  async function ensureOnce(force = false): Promise<CertificateStatus> {
     const domain = options.domain()
     if (!domain) throw new Error('还没有配置固定公网域名。')
     const current = await status()
-    if (!current.selfSigned && current.expiresAt && current.expiresAt - now() > RENEW_BEFORE_MS) return current
+    if (!force && !current.selfSigned && current.expiresAt && current.expiresAt - now() > RENEW_BEFORE_MS) return current
     pending = true
     try {
       const issued = options.issue
@@ -114,8 +115,8 @@ export function createCertificateManager(options: CertificateManagerOptions): Ce
       await writeAtomic(target.keyPath, issued.key, 0o600)
       lastError = undefined
     } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error)
-      options.log?.(`证书签发失败：${lastError}`)
+      lastError = { message: error instanceof Error ? error.message : String(error), domain }
+      options.log?.(`证书签发失败：${lastError.message}`)
       throw error
     } finally {
       pending = false
@@ -123,9 +124,9 @@ export function createCertificateManager(options: CertificateManagerOptions): Ce
     return status()
   }
 
-  function ensure(): Promise<CertificateStatus> {
+  function ensure(force = false): Promise<CertificateStatus> {
     if (!running) {
-      running = ensureOnce().finally(() => {
+      running = ensureOnce(force).finally(() => {
         running = undefined
       })
     }

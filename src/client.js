@@ -1071,7 +1071,7 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dshp_cardTitleRow' },
               h('h3', { className: 'dshp_cardTitle' }, '已连接设备'),
-              helpTip('每台手机各有一条设备凭据，可以同时在线；绿点表示 App 此刻正握着事件流。局域网直连或隧道转发时不展示来源 IP。'),
+              helpTip('每台手机各有一条设备凭据，可以同时在线；绿点表示 App 此刻正握着事件流。最后在线是最后一次请求时间，不是心跳。局域网直连或隧道转发时不展示来源 IP。'),
             ),
             h(
               'span',

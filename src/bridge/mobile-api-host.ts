@@ -69,6 +69,8 @@ export interface MobileApiHost {
   readonly error?: string
   handle(request: IncomingMessage, response: ServerResponse, pathname?: string): Promise<boolean>
   revokeDevice(deviceId: string): number
+  /** 关闭该设备已打开的事件流；吊销凭据后调用，避免旧 SSE 继续收流。 */
+  disconnectDevice(deviceId: string): void
   /** 当前握着事件流长连接的设备；手机断网、退后台都会立刻消失。 */
   onlineDeviceIds(): ReadonlySet<string>
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean
@@ -176,6 +178,8 @@ class EmbeddedMobileApiHost implements MobileApiHost {
   private closed = false
   /** 设备 → 它当前打开的事件流连接数。 */
   private readonly streamingDevices = new Map<string, number>()
+  /** 设备 → 具体响应对象，吊销凭据时要立刻断开这些流。 */
+  private readonly deviceStreams = new Map<string, Set<ServerResponse>>()
 
   constructor(private readonly options: MobileApiHostOptions) {
     const upstream = loadUpstream()
@@ -321,10 +325,17 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     const deviceId = this.deviceIdFor(request)
     if (!deviceId) return
     this.streamingDevices.set(deviceId, (this.streamingDevices.get(deviceId) ?? 0) + 1)
+    const streams = this.deviceStreams.get(deviceId) ?? new Set<ServerResponse>()
+    streams.add(response)
+    this.deviceStreams.set(deviceId, streams)
     response.once('close', () => {
       const remaining = (this.streamingDevices.get(deviceId) ?? 0) - 1
       if (remaining > 0) this.streamingDevices.set(deviceId, remaining)
       else this.streamingDevices.delete(deviceId)
+      const current = this.deviceStreams.get(deviceId)
+      if (!current) return
+      current.delete(response)
+      if (current.size === 0) this.deviceStreams.delete(deviceId)
     })
   }
 
@@ -333,7 +344,23 @@ class EmbeddedMobileApiHost implements MobileApiHost {
   }
 
   revokeDevice(deviceId: string): number {
-    return this.credentials.revokeDevice(String(this.state.instanceId ?? ''), deviceId)
+    const count = this.credentials.revokeDevice(String(this.state.instanceId ?? ''), deviceId)
+    this.disconnectDevice(deviceId)
+    return count
+  }
+
+  disconnectDevice(deviceId: string): void {
+    const streams = this.deviceStreams.get(deviceId)
+    if (!streams) return
+    this.deviceStreams.delete(deviceId)
+    this.streamingDevices.delete(deviceId)
+    for (const response of streams) {
+      try {
+        response.destroy()
+      } catch {
+        // The stream may already have closed between iteration and destroy.
+      }
+    }
   }
 
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean {
@@ -349,6 +376,7 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     this.closed = true
     this.routes.clear()
     this.upgrades.clear()
+    for (const deviceId of [...this.deviceStreams.keys()]) this.disconnectDevice(deviceId)
     this.streamingDevices.clear()
     try {
       this.preview.close()
@@ -385,6 +413,7 @@ function unavailableHost(error: unknown, options: MobileApiHostOptions): MobileA
     error: message,
     onlineDeviceIds: () => new Set<string>(),
     revokeDevice: () => 0,
+    disconnectDevice() {},
     async handle(request, response) {
       if (!isMobileApiPath(requestPath(request))) return false
       writeJson(response, 503, {

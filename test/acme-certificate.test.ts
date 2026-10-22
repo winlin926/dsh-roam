@@ -100,6 +100,41 @@ describe('certificate manager', () => {
     expect(issued).toBe(2)
   })
 
+  it('reissues on demand even when the current certificate is still fresh', async () => {
+    const paths = workspace()
+    writeFileSync(join(paths.deployDir, 'dsh.example.com.crt'), ISSUED)
+    let issued = 0
+    const manager = createCertificateManager({
+      ...paths,
+      domain: () => 'dsh.example.com',
+      now: () => expiryOf(ISSUED) - 60 * 24 * 60 * 60 * 1000,
+      issue: async () => {
+        issued += 1
+        return { certificate: ISSUED, key: 'PRIVATE KEY' }
+      }
+    })
+    await manager.ensure(true)
+    await manager.ensure(true)
+    expect(issued).toBe(2)
+  })
+
+  it('does not show an error that belongs to another domain', async () => {
+    const paths = workspace()
+    let domain = 'a.example.com'
+    const manager = createCertificateManager({
+      ...paths,
+      domain: () => domain,
+      issue: async () => {
+        throw new Error('rate limited for a.example.com')
+      }
+    })
+    await expect(manager.ensure()).rejects.toThrow('rate limited')
+    expect((await manager.status()).error).toBe('rate limited for a.example.com')
+
+    domain = 'b.example.com'
+    expect((await manager.status()).error).toBeUndefined()
+  })
+
   it('keeps the last error on the status instead of throwing it away', async () => {
     const paths = workspace()
     const manager = createCertificateManager({

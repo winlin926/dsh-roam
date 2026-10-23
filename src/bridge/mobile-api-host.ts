@@ -39,7 +39,6 @@ interface UpstreamModules {
     authorized: (request: IncomingMessage) => boolean,
     note?: () => void
   ): (handler: RequestHandler) => RequestHandler
-  authorized(request: IncomingMessage): boolean
   createApiProxy(ctx: unknown): unknown
   loadState(): Record<string, any>
   hostMetadata(): Record<string, unknown>
@@ -58,6 +57,7 @@ interface UpstreamModules {
 /** 设备凭据库的只读视图：按凭据找设备、按设备吊销。 */
 interface UpstreamCredentials {
   lookup(credential: string, instanceId: string): { deviceId?: unknown } | null
+  isLive(record: { deviceId?: unknown }): boolean
   revokeDevice(instanceId: string, deviceId: string): number
 }
 
@@ -196,7 +196,6 @@ function loadUpstream(): UpstreamModules {
   return {
     registerMobileRoutes: mobileApi.registerMobileRoutes as UpstreamModules['registerMobileRoutes'],
     createGuarded: routing.createGuarded as UpstreamModules['createGuarded'],
-    authorized: auth.authorized as UpstreamModules['authorized'],
     createApiProxy: hostBridge.createApiProxy as UpstreamModules['createApiProxy'],
     loadState: core.loadState as UpstreamModules['loadState'],
     hostMetadata: status.hostMetadata as UpstreamModules['hostMetadata'],
@@ -245,12 +244,16 @@ class EmbeddedMobileApiHost implements MobileApiHost {
 
     this.provideApiProxy(upstream)
 
-    // The upstream falls back to a stateless 365-day Bearer token when no
-    // device credential is presented. That makes per-device revocation a lie:
-    // a lost phone can drop the header and keep using the old token. This
-    // deployment only accepts the revocable dshc_ credential.
-    const requireDeviceCredential = (request: IncomingMessage): boolean =>
-      Boolean(upstream.presentedCredential(request)) && upstream.authorized(request)
+    // The upstream falls back to a stateless Bearer token when a `dshc_`
+    // header is unknown, which lets a revoked device bypass revocation by
+    // sending a forged prefix. Resolve the credential in this deployment's
+    // store and require that exact record to be live.
+    const requireDeviceCredential = (request: IncomingMessage): boolean => {
+      const credential = upstream.presentedCredential(request)
+      if (!credential) return false
+      const record = upstream.credentials.lookup(credential, String(this.state.instanceId ?? ''))
+      return Boolean(record && upstream.credentials.isLive(record))
+    }
     const guarded = upstream.createGuarded(options.ctx, requireDeviceCredential, () => undefined)
     this.preview = upstream.createPreviewService({
       authorized: requireDeviceCredential,
@@ -477,7 +480,8 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     const credential = this.presentedCredential(request)
     if (!credential) return undefined
     const record = this.credentials.lookup(credential, String(this.state.instanceId ?? ''))
-    const deviceId = record && typeof record.deviceId === 'string' ? record.deviceId : ''
+    if (!record || !this.credentials.isLive(record)) return undefined
+    const deviceId = typeof record.deviceId === 'string' ? record.deviceId : ''
     return deviceId || undefined
   }
 
@@ -579,8 +583,8 @@ function unavailableHost(error: unknown, options: MobileApiHostOptions): MobileA
     pairingCode: () => undefined,
     revokeDevice: () => 0,
     disconnectDevice() {},
-    async handle(request, response) {
-      if (!isMobileApiPath(requestPath(request))) return false
+    async handle(request, response, pathname = requestPath(request)) {
+      if (!isMobileApiPath(pathname)) return false
       writeJson(response, 503, {
         ok: false,
         error: { code: 'mobile-api-unavailable', message: 'AI-HUB 移动 API 未就绪' }

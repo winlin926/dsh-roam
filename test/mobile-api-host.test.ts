@@ -214,6 +214,14 @@ describe('embedded mobile API', () => {
       headers: { 'x-dsh-device-credential': payload.deviceCredential }
     })
     expect(afterRevoke.status).toBe(401)
+
+    const forgedWithBearer = await call(port, '/api/mobile/v1/status', {
+      headers: {
+        'x-dsh-device-credential': 'dshc_forged',
+        authorization: 'Bearer ' + payload.token
+      }
+    })
+    expect(forgedWithBearer.status).toBe(401)
   })
 
   it('applies a global pairing budget across forged client addresses', async () => {

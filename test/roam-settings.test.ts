@@ -263,7 +263,7 @@ describe('fixed public URL validation', () => {
 })
 
 describe('phone bridge fixed public URL routes', () => {
-  it('removes a paired device from the ledger without crashing the route', async () => {
+  it('keeps the device when the revoke backend is unavailable', async () => {
     const settingsFile = await tempSettingsFile()
     const { port, directory } = await startHarness({ settingsFile })
     const deviceFile = join(directory, 'dsh-roam', 'mobile-devices.json')
@@ -279,10 +279,10 @@ describe('phone bridge fixed public URL routes', () => {
     expect((before.body.devices as unknown[]).length).toBe(1)
 
     const removed = await postJson(port, '/phone-bridge/devices/remove', { deviceId: 'device-1' })
-    expect(removed.status).toBe(200)
-    expect(removed.body.ok).toBe(true)
-    expect((removed.body.devices as unknown[]).length).toBe(0)
-    expect(JSON.parse(await readFile(deviceFile, 'utf8'))).toEqual([])
+    expect(removed.status).toBe(503)
+    expect(removed.body.ok).toBe(false)
+    expect((removed.body.devices as unknown[]).length).toBe(1)
+    expect(JSON.parse(await readFile(deviceFile, 'utf8'))).toHaveLength(1)
   })
 
   it('rejects a rebinding Host header on the settings routes', async () => {

@@ -238,6 +238,16 @@ window.__ModuleLoader__.load({
       return remaining > 0 ? '约 ' + remaining + ' 分钟后失效' : '已失效，正在刷新'
     }
 
+    async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      try {
+        return await fetch(url, { ...options, signal: controller.signal })
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+
     async function writeClipboard(value) {
       try {
         if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -279,10 +289,13 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         let alive = true
+        let inFlight = false
         const load = async () => {
+          if (inFlight) return
+          inFlight = true
           const request = ++latestStateRequest
           try {
-            const response = await fetch(STATE_URL, { cache: 'no-store', credentials: 'same-origin' })
+            const response = await fetchWithTimeout(STATE_URL, { cache: 'no-store', credentials: 'same-origin' })
             if (!alive || request !== latestStateRequest) return
             if (response.ok === false) {
               setPollError('HTTP ' + (response.status || '?'))
@@ -296,6 +309,8 @@ window.__ModuleLoader__.load({
           } catch (cause) {
             if (!alive || request !== latestStateRequest) return
             setPollError(cause instanceof Error ? cause.message : String(cause))
+          } finally {
+            inFlight = false
           }
         }
         void load()
@@ -342,7 +357,7 @@ window.__ModuleLoader__.load({
         markError(card, '')
         clearNotice(card)
         try {
-          const response = await fetch(path, {
+          const response = await fetchWithTimeout(path, {
             method: 'POST',
             cache: 'no-store',
             credentials: 'same-origin',
@@ -416,10 +431,27 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dshp_cardHead' },
               h('h2', { className: 'dshp_title' }, '连接手机'),
-              h('span', { className: 'dshp_pill' }, h('span', { className: 'dshp_dot' }), '启动中'),
+              h('span', { className: 'dshp_pill' }, h('span', { className: 'dshp_dot' }), pollError ? '读取失败' : '启动中'),
             ),
             h('div', { className: 'dshp_skeletonLine' }),
-            h('p', { className: 'dshp_note' }, '还在启动：正在等待手机桥接服务就绪…'),
+            pollError
+              ? h(
+                  'div',
+                  null,
+                  h('p', { className: 'dshp_error', role: 'alert' }, '无法读取连接状态：' + pollError),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dshp_button',
+                      onClick: () => {
+                        if (typeof window !== 'undefined') window.location.reload()
+                      },
+                    },
+                    '重试',
+                  ),
+                )
+              : h('p', { className: 'dshp_note' }, '还在启动：正在等待手机桥接服务就绪…'),
           ),
         )
       }

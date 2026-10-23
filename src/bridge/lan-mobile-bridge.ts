@@ -31,7 +31,6 @@ const MAX_BODY_BYTES = 64 * 1024
 const PAIRING_TTL_MS = 5 * 60 * 1000
 const PIN_TTL_MS = PAIRING_TTL_MS
 const MOBILE_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
-const MOBILE_IP_FALLBACK_MS = 10 * 60 * 1000
 const PIN_FAIL_WINDOW_MS = 10 * 60 * 1000
 const PIN_FAIL_PER_IP = 5
 const PIN_FAIL_GLOBAL = 20
@@ -339,7 +338,7 @@ export class LanMobileBridge {
 
   async toggleTunnel(enable?: boolean): Promise<LanMobileBridgeSnapshot> {
     const targetState = enable !== undefined ? enable : !this.tunnelActive
-    if (targetState && this.sessions.size > 0 && !this.tunnelActive) {
+    if (targetState && this.mobileBrowserOnline() && !this.tunnelActive) {
       throw new Error('Disconnect the phone before switching connection modes.')
     }
     if (!targetState) {
@@ -390,7 +389,7 @@ export class LanMobileBridge {
   }
 
   async fallbackToPinggy(): Promise<LanMobileBridgeSnapshot> {
-    if (this.sessions.size > 0) {
+    if (this.mobileBrowserOnline()) {
       throw new Error('Disconnect the phone before switching connection modes.')
     }
     if (!this.tunnelActive || this.tunnelInstance?.provider !== 'cloudflare') {
@@ -700,21 +699,12 @@ export class LanMobileBridge {
     connectionMode: MobileConnectionMode
   ): void {
     const token = randomBytes(32).toString('base64url')
-    if (connectionMode === 'tunnel') {
-      const existing = this.mobileToken(request)
-      if (existing && this.suspendedSessions.has(existing)) {
-        const session = this.suspendedSessions.get(existing)!
-        this.sessions.set(existing, session)
-        this.suspendedSessions.delete(existing)
-        this.resumableSessions.delete(existing)
-      }
-    } else {
-      for (const [savedToken, session] of this.suspendedSessions) {
-        if (session.remoteAddress !== remoteAddress) continue
-        this.sessions.set(savedToken, session)
-        this.suspendedSessions.delete(savedToken)
-        this.resumableSessions.delete(savedToken)
-      }
+    const existing = this.mobileToken(request)
+    if (existing && this.suspendedSessions.has(existing)) {
+      const session = this.suspendedSessions.get(existing)!
+      this.sessions.set(existing, session)
+      this.suspendedSessions.delete(existing)
+      this.resumableSessions.delete(existing)
     }
     this.sessions.set(token, { token, remoteAddress, pairedAt: this.now() })
     this.pairingToken = undefined
@@ -820,7 +810,14 @@ export class LanMobileBridge {
           error: 'AI-HUB mobile API is unavailable.'
         })
       }
-      await this.options.mobileApi.handle(request, response, `${MOBILE_API_V1_PREFIX}/pair`)
+      const handled = await this.options.mobileApi.handle(
+        request,
+        response,
+        `${MOBILE_API_V1_PREFIX}/pair`
+      )
+      if (!handled) {
+        this.json(response, 503, { ok: false, error: 'AI-HUB mobile API is unavailable.' })
+      }
       return
     }
 
@@ -836,7 +833,10 @@ export class LanMobileBridge {
           error: 'AI-HUB mobile API is unavailable.'
         })
       }
-      await this.options.mobileApi.handle(request, response)
+      const handled = await this.options.mobileApi.handle(request, response, url.pathname)
+      if (!handled) {
+        this.json(response, 503, { ok: false, error: 'AI-HUB mobile API is unavailable.' })
+      }
       return
     }
 
@@ -892,7 +892,7 @@ export class LanMobileBridge {
         this.rotatePairingToken()
       }
       const snapshot = this.snapshot()
-      const connected = this.sessions.size > 0
+      const connected = this.mobileBrowserOnline()
       if (!snapshot.pairingUrl && !connected) return this.text(response, 503, 'Bridge unavailable.')
       const qrSvg = snapshot.pairingUrl
         ? await QRCode.toString(snapshot.pairingUrl, { type: 'svg', margin: 1, width: 260 })
@@ -923,7 +923,7 @@ export class LanMobileBridge {
 
     if (request.method === 'GET' && url.pathname === '/desktop/status') {
       if (this.rejectUnlessDesktop(request, transportAddress, response)) return
-      return this.json(response, 200, { connected: this.sessions.size > 0 })
+      return this.json(response, 200, { connected: this.mobileBrowserOnline() })
     }
 
     if (request.method === 'GET' && url.pathname === '/desktop/tunnel/status') {
@@ -938,7 +938,7 @@ export class LanMobileBridge {
     if (request.method === 'POST' && url.pathname === '/desktop/tunnel/fallback') {
       if (this.rejectUnlessDesktop(request, transportAddress, response)) return
       this.verifySameOrigin(request)
-      if (this.sessions.size > 0) {
+      if (this.mobileBrowserOnline()) {
         return this.json(response, 409, {
           ok: false,
           error: 'Disconnect the phone before switching connection modes.'
@@ -1011,7 +1011,7 @@ export class LanMobileBridge {
     if (request.method === 'POST' && url.pathname === '/desktop/tunnel/toggle') {
       if (this.rejectUnlessDesktop(request, transportAddress, response)) return
       this.verifySameOrigin(request)
-      if (this.sessions.size > 0) {
+      if (this.mobileBrowserOnline()) {
         return this.json(response, 409, {
           ok: false,
           error: 'Disconnect the phone before switching connection modes.'
@@ -1101,7 +1101,7 @@ export class LanMobileBridge {
     if (request.method === 'GET' && url.pathname === '/pair') {
       const migrationUrl = this.tunnelMigrationUrl(url, connectionMode)
       if (migrationUrl) return this.redirect(response, migrationUrl)
-      if (this.authorized(request, remoteAddress, connectionMode)) {
+      if (this.authorized(request)) {
         response.statusCode = 302
         response.setHeader('location', '/')
         response.end()
@@ -1155,16 +1155,13 @@ export class LanMobileBridge {
       return this.json(response, 200, { ok: true })
     }
 
-    if (!this.authorized(request, remoteAddress, connectionMode)) {
-      this.rememberMobileContext(request, remoteAddress, connectionMode)
-      if (!this.authorized(request, remoteAddress, connectionMode)) {
-        if (request.method === 'GET' && url.pathname === '/') {
-          const migrationUrl = this.tunnelMigrationUrl(url, connectionMode)
-          if (migrationUrl) return this.redirect(response, migrationUrl)
-          return this.html(response, renderMobileReconnectPage(this.locale(), connectionMode))
-        }
-        return this.text(response, 401, 'Pair your phone again.')
+    if (!this.authorized(request)) {
+      if (request.method === 'GET' && url.pathname === '/') {
+        const migrationUrl = this.tunnelMigrationUrl(url, connectionMode)
+        if (migrationUrl) return this.redirect(response, migrationUrl)
+        return this.html(response, renderMobileReconnectPage(this.locale(), connectionMode))
       }
+      return this.text(response, 401, 'Pair your phone again.')
     }
     if (request.method === 'GET' && url.pathname === '/api/status') {
       return this.json(response, 200, {
@@ -1245,41 +1242,24 @@ export class LanMobileBridge {
     return left.length === right.length && timingSafeEqual(left, right)
   }
 
-  private authorized(
-    request: IncomingMessage,
-    remoteAddress: string,
-    connectionMode: MobileConnectionMode
-  ): boolean {
+  private authorized(request: IncomingMessage): boolean {
     const token = this.mobileToken(request)
-    if (token) {
-      const session = this.sessions.get(token)
-      if (session && this.sessionUsable(session)) {
-        session.lastSeenAt = this.now()
-        return true
-      }
-      if (session) this.sessions.delete(token)
+    if (!token) return false
+    const session = this.sessions.get(token)
+    if (!session) return false
+    if (!this.sessionUsable(session)) {
+      this.sessions.delete(token)
+      return false
     }
-    // 固定公网域名一旦配置，回环来源就不再等于“本机人”：frpc 也把公网请求送进 127.0.0.1。
-    // 这时只认设备 cookie，避免整台公网入口被一个 127.0.0.1 会话代表。
-    if (connectionMode === 'tunnel' || Boolean(this.options.publicUrl?.())) return false
-    // iOS 主屏应用首次启动时可能还没有共享 Cookie；只在这段短暂交接窗口内按来源 IP 放行。
-    return [...this.sessions.values()].some(
-      (session) =>
-        session.remoteAddress === remoteAddress &&
-        this.sessionUsable(session) &&
-        this.now() - session.pairedAt < MOBILE_IP_FALLBACK_MS
-    )
+    session.lastSeenAt = this.now()
+    return true
   }
 
   private mobileToken(request: IncomingMessage): string | undefined {
     return this.cookieValue(request, 'dsh_mobile')
   }
 
-  /**
-   * Restores one session the desktop disconnect suspended. Cookies that
-   * `rememberMobileContext` recorded from an anonymous request are not eligible,
-   * so a neighbor cannot mint a cookie and reconnect.
-   */
+  /** Restores one session the desktop disconnect suspended. */
   private resumeSuspendedMobileSession(request: IncomingMessage): boolean {
     const token = this.mobileToken(request)
     if (!token) return false
@@ -1310,30 +1290,6 @@ export class LanMobileBridge {
 
   private sessionUsable(session: MobileSession): boolean {
     return this.now() - session.pairedAt < MOBILE_SESSION_TTL_MS
-  }
-
-  private rememberMobileContext(
-    request: IncomingMessage,
-    remoteAddress: string,
-    connectionMode: MobileConnectionMode
-  ): void {
-    if (connectionMode === 'tunnel') return
-    const token = this.mobileToken(request)
-    if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return
-    const sameDeviceIsActive = [...this.sessions.values()].some(
-      (session) => session.remoteAddress === remoteAddress
-    )
-    if (sameDeviceIsActive) {
-      this.sessions.set(token, { token, remoteAddress, pairedAt: this.now() })
-      this.suspendedSessions.delete(token)
-      this.resumableSessions.delete(token)
-      return
-    }
-    if (!this.suspendedSessions.has(token) && this.suspendedSessions.size >= 16) {
-      const oldest = this.suspendedSessions.keys().next().value
-      if (oldest) this.suspendedSessions.delete(oldest)
-    }
-    this.suspendedSessions.set(token, { token, remoteAddress, pairedAt: this.now() })
   }
 
   private rejectUnlessDesktop(
@@ -1403,28 +1359,24 @@ export class LanMobileBridge {
   }
 
   /**
-   * The public entry is decided by the Host the caller asked for, not by the
-   * transport address: a reverse proxy may forward to a LAN address, and
-   * treating that as LAN would skip the 6-digit PIN. A trailing dot and an
-   * explicit port are normalized away before the comparison.
+   * Public traffic is recognised from transport evidence, never from a Host
+   * header the caller controls. Any forwarding header means a reverse proxy is
+   * in front of the bridge, so the request must pass the PIN gate. A configured
+   * fixed public origin is likewise fail-closed: its LAN listener cannot tell a
+   * local browser from an frpc-forwarded request, so both need the PIN.
    */
   private requestConnectionMode(request: IncomingMessage): MobileConnectionMode {
     const host = requestHostname(request.headers.host)
-    const forwardedAddress = firstHeaderValue(request.headers['cf-connecting-ip'])
-    const ray = firstHeaderValue(request.headers['cf-ray'])
-    return isInternetTunnelHost(host) || Boolean(forwardedAddress && ray) || host === this.configuredPublicHost()
-      ? 'tunnel'
-      : 'lan'
-  }
-
-  private configuredPublicHost(): string | undefined {
-    const configured = this.options.publicUrl?.()
-    if (typeof configured !== 'string' || configured.length === 0) return undefined
-    try {
-      return new URL(configured).hostname.toLowerCase().replace(/\.$/, '')
-    } catch {
-      return undefined
-    }
+    const forwardingHeaders = [
+      'forwarded',
+      'x-forwarded-for',
+      'x-real-ip',
+      'cf-connecting-ip',
+      'cf-ray'
+    ]
+    if (forwardingHeaders.some((name) => request.headers[name] !== undefined)) return 'tunnel'
+    if (this.options.publicUrl?.()) return 'tunnel'
+    return isInternetTunnelHost(host) ? 'tunnel' : 'lan'
   }
 
   private tunnelMigrationUrl(url: URL, connectionMode: MobileConnectionMode): string | undefined {

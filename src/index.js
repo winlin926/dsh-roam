@@ -553,7 +553,11 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevi
     if (!deviceId) {
       return writeJson(response, 400, result(false, '请提供要移除的设备。', await state()))
     }
-    revokeDevice(deviceId)
+    try {
+      revokeDevice(deviceId)
+    } catch (error) {
+      return writeJson(response, 503, result(false, errorMessage(error), await state()))
+    }
     writeJson(response, 200, result(true, null, await state()))
   })
 }
@@ -666,7 +670,9 @@ export function apply(ctx, config = {}) {
   }, 'dsh-roam desktop url')
 
   registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, (deviceId) => {
-    const revoked = mobileApiHolder.current?.revokeDevice(deviceId) ?? 0
+    const api = mobileApiHolder.current
+    if (!api?.available) throw new Error('AI-HUB 移动 API 未就绪，未移除设备。')
+    const revoked = api.revokeDevice(deviceId)
     mobileDevices.forget(deviceId)
     return revoked
   })

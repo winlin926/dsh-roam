@@ -395,6 +395,24 @@ describe('LAN mobile bridge pairing surface', () => {
     expect(bridge.snapshot().connected).toBe(true)
   })
 
+  it('does not promote an arbitrary cookie from the pairing address', async () => {
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => 'http://127.0.0.1:9999'
+    })
+    bridges.push(bridge)
+    const { port, cookie } = await pairBridge(bridge)
+
+    const planted = await fetch(`http://127.0.0.1:${port}/api/status`, {
+      headers: { cookie: `dsh_mobile=${'a'.repeat(43)}` }
+    })
+    expect(planted.status).toBe(401)
+
+    const owner = await fetch(`http://127.0.0.1:${port}/api/status`, {
+      headers: { cookie }
+    })
+    expect(owner.status).toBe(200)
+  })
+
   it('does not resume a cookie remembered from an unauthorized request', async () => {
     let reconnectRequests = 0
     const bridge = new LanMobileBridge({
@@ -651,8 +669,7 @@ describe('LAN mobile bridge pairing surface', () => {
     const samePhoneHomeScreen = await fetch(
       `http://127.0.0.1:${snapshot.port}/api/status`
     )
-    expect(samePhoneHomeScreen.status).toBe(200)
-    expect(await samePhoneHomeScreen.json()).toEqual({ connected: true })
+    expect(samePhoneHomeScreen.status).toBe(401)
 
     const blocked = await fetch(`http://127.0.0.1:${snapshot.port}/api/rpc`, {
       method: 'POST',
@@ -695,12 +712,11 @@ describe('LAN mobile bridge pairing surface', () => {
     expect(reapproved.status).toBe(302)
     const newCookie = reapproved.headers.get('set-cookie')!.split(';', 1)[0]!
 
-    const restoredHomeScreen = await fetch(
+    const oldCookieAfterRepair = await fetch(
       `http://127.0.0.1:${snapshot.port}/api/status`,
       { headers: { cookie } }
     )
-    expect(restoredHomeScreen.status).toBe(200)
-    expect(await restoredHomeScreen.json()).toEqual({ connected: true })
+    expect(oldCookieAfterRepair.status).toBe(401)
     const newlyPairedSafari = await fetch(
       `http://127.0.0.1:${snapshot.port}/api/status`,
       { headers: { cookie: newCookie } }
@@ -709,18 +725,18 @@ describe('LAN mobile bridge pairing surface', () => {
     const homeScreenWithoutSharedCookies = await fetch(
       `http://127.0.0.1:${snapshot.port}/api/status`
     )
-    expect(homeScreenWithoutSharedCookies.status).toBe(200)
+    expect(homeScreenWithoutSharedCookies.status).toBe(401)
     const restoredLegacyHomeScreen = await fetch(
       `http://127.0.0.1:${snapshot.port}/api/status`,
       { headers: { cookie: legacyHomeScreenCookie } }
     )
-    expect(restoredLegacyHomeScreen.status).toBe(200)
+    expect(restoredLegacyHomeScreen.status).toBe(401)
     const lateHomeScreenCookie = `dsh_mobile=${'b'.repeat(43)}`
     const restoredAfterSafariPaired = await fetch(
       `http://127.0.0.1:${snapshot.port}/api/status`,
       { headers: { cookie: lateHomeScreenCookie } }
     )
-    expect(restoredAfterSafariPaired.status).toBe(200)
+    expect(restoredAfterSafariPaired.status).toBe(401)
   })
 
   it('adapts Harness 0.1.2 history records to the stable mobile page contract', async () => {
@@ -1683,6 +1699,49 @@ describe('LAN vs tunnel pairing authorization', () => {
 
     const stranger = await request('/api/status', 'GET', { host: 'dsh.example.com' })
     expect(stranger.status).toBe(401)
+  })
+
+  it('keeps the PIN gate when a public domain is rewritten to a loopback Host', async () => {
+    const store = memoryPinStore({ pin: '246810', pinConsent: true })
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => 'http://127.0.0.1:9999',
+      pairingPinStore: store,
+      publicUrl: () => 'https://dsh.example.com'
+    })
+    bridges.push(bridge)
+    const snapshot = await bridge.start()
+    const token = new URL(bridge.snapshot().pairingUrl ?? snapshot.pairingUrl!).searchParams.get('token')
+
+    const rewritten = await new Promise<{ status?: number; setCookie?: string; text: string }>(
+      (resolve, reject) => {
+        const outgoing = httpRequest(
+          {
+            host: '127.0.0.1',
+            port: snapshot.port,
+            path: `/pair?token=${token}`,
+            method: 'GET',
+            headers: { host: `127.0.0.1:${snapshot.port}` }
+          },
+          (response) => {
+            const chunks: Buffer[] = []
+            response.on('data', (chunk: Buffer) => chunks.push(chunk))
+            response.once('end', () =>
+              resolve({
+                status: response.statusCode,
+                setCookie: response.headers['set-cookie']?.[0],
+                text: Buffer.concat(chunks).toString('utf8')
+              })
+            )
+          }
+        )
+        outgoing.once('error', reject)
+        outgoing.end()
+      }
+    )
+
+    expect(rewritten.status).toBe(200)
+    expect(rewritten.text).toContain('Enter pairing password')
+    expect(rewritten.setCookie).toBeUndefined()
   })
 
   it('reports the fresh expiry on the first and rotated ephemeral PIN', async () => {

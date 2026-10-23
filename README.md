@@ -35,7 +35,7 @@ dsh-roam 把这两条路合并成一个官方 DSH 插件：
 1. 安装插件（npm 发布后）：
 
    ```bash
-   dsh plugin --profile web add dsh-roam@0.2.2
+   dsh plugin --profile web add dsh-roam@0.2.3
    ```
 
    本地开发时也可以在 profile 里用 `link:` 指向仓库目录，改完代码执行 `pnpm build` 后重载插件。
@@ -129,6 +129,12 @@ pnpm test
 npm pack --dry-run
 ```
 
+## 测试状态
+
+- 已验证：Windows 11、DSH `0.2.0-rc.2`、Android 14（API 34）、AI-HUB App `0.2.139`；局域网浏览器、公网浏览器、AI-HUB 局域网、AI-HUB 公网、设备移除均通过。
+- 未实测：iOS / iPadOS（Safari 与 AI-HUB iOS 版）。插件没有平台锁定，iOS 用户可自行验证；遇到问题请附系统版本和 App 版本提 issue。
+- 公网验证使用固定域名 + frpc + Let's Encrypt 证书。
+
 ## 版本记录
 
 - npm：https://www.npmjs.com/package/dsh-roam
@@ -136,4 +142,4 @@ npm pack --dry-run
 
 ## 许可证
 
-MIT。第三方组件与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+MIT，Copyright (c) 2026 winlin926。第三方组件与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

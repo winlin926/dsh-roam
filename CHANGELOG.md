@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3
+
+- 统一版权主体为 `winlin926`，LICENSE 与 package.json.author 一致。
+- README 增加真机测试状态：Windows + Android 已实测，iOS 未实测。
+- 不包含功能变更；已配对设备和设置不受影响。
+
 ## 0.2.2
 
 - 修复「移除设备」报错 `mobileDevices is not defined`：设备台账现在会真正从本机删除，并补回归测试。

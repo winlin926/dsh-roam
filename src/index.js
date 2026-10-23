@@ -668,7 +668,6 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => {
     let instance
-    const pinFileExisted = existsSync(pinFile)
     const ready = (async () => {
       const port = config.port ?? await choosePort(PORT_START)
       const logos = brandLogoPaths()
@@ -720,7 +719,6 @@ export function apply(ctx, config = {}) {
       })
       holder.bridge = instance
       await migrateStoredInitialPin(settingsFile, (pin) => instance.setDurablePin(pin))
-      if (!pinFileExisted && mobileApiHolder.current.available && !instance.pairingPinEnabled()) instance.setPinConsent(true)
       await instance.start()
     })()
     ready.catch((error) => {

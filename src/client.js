@@ -781,6 +781,9 @@ window.__ModuleLoader__.load({
             pinFixed
               ? h('p', { className: 'dshp_note' }, 'AI-HUB 配对：扫码，或手动填地址（局域网选 http、公网选 https），配对码填上方连接密码。')
               : h('p', { className: 'dshp_note' }, 'AI-HUB 配对只接受固定密码。点「设为固定」保存 6 位数字后，这里的二维码和地址就能用。'),
+            pinFixed
+              ? h('p', { className: 'dshp_warn' }, '这个二维码包含固定连接密码，请勿截图外发或投屏展示。')
+              : null,
             renderError('connect'),
             renderNotice('connect'),
           ),

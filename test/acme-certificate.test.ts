@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createCertificateManager, readDeployedCertificate } from '../lib/bridge/acme-certificate.js'
+import { createCertificateManager, readDeployedCertificate, restrictPrivateKeyAcl } from '../lib/bridge/acme-certificate.js'
 
 const SELF_SIGNED = readFileSync(
   fileURLToPath(new URL('./fixtures/example.test.crt', import.meta.url)),
@@ -148,5 +148,25 @@ describe('certificate manager', () => {
     const status = await manager.status()
     expect(status.error).toBe('rate limited')
     expect(status.pending).toBe(false)
+  })
+})
+
+describe('private key ACL', () => {
+  it('removes inherited access for other local accounts on Windows', async () => {
+    if (process.platform !== 'win32') return
+    const paths = workspace()
+    const keyPath = join(paths.stateDir, 'account.key')
+    mkdirSync(paths.stateDir, { recursive: true })
+    writeFileSync(keyPath, 'secret')
+    await restrictPrivateKeyAcl(keyPath)
+    const { execFileSync } = await import('node:child_process')
+    const sids = execFileSync('powershell', [
+      '-NoProfile',
+      '-Command',
+      `(Get-Acl '${keyPath}').Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }`,
+    ], { encoding: 'utf8' })
+    expect(sids).not.toContain('S-1-5-11')
+    expect(sids).not.toContain('S-1-1-0')
+    expect(sids).toContain('S-1-5-18')
   })
 })

@@ -54,7 +54,7 @@ function call(
   port: number,
   path: string,
   options: { method?: string; headers?: Record<string, string>; body?: string } = {}
-): Promise<{ status: number; body: string }> {
+): Promise<{ status: number; body: string; headers: Record<string, string | string[] | undefined> }> {
   return new Promise((resolve, reject) => {
     const request = httpRequest({
       host: '127.0.0.1',
@@ -67,7 +67,8 @@ function call(
       response.on('data', (chunk) => chunks.push(chunk as Buffer))
       response.on('end', () => resolve({
         status: response.statusCode ?? 0,
-        body: Buffer.concat(chunks).toString('utf8')
+        body: Buffer.concat(chunks).toString('utf8'),
+        headers: response.headers
       }))
     })
     request.on('error', reject)
@@ -152,6 +153,57 @@ describe('embedded mobile API', () => {
     })
     expect(status.status).toBe(200)
     expect(JSON.parse(status.body)).toMatchObject({ ok: true })
+  })
+
+  it('rejects the stateless bearer token and revokes the device credential', async () => {
+    const { port } = await startBridge('246810')
+    const paired = await call(port, '/api/mobile/v1/pair', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: '246810', device: { name: 'revocable-phone' } })
+    })
+    const payload = JSON.parse(paired.body) as { token: string; deviceCredential: string }
+
+    const bearerOnly = await call(port, '/api/mobile/v1/status', {
+      headers: { authorization: 'Bearer ' + payload.token }
+    })
+    expect(bearerOnly.status).toBe(401)
+
+    const withCredential = await call(port, '/api/mobile/v1/status', {
+      headers: { 'x-dsh-device-credential': payload.deviceCredential }
+    })
+    expect(withCredential.status).toBe(200)
+
+    const revoked = await call(port, '/api/mobile/v1/device-credential/revoke', {
+      method: 'POST',
+      headers: { 'x-dsh-device-credential': payload.deviceCredential }
+    })
+    expect(revoked.status).toBe(200)
+    expect(JSON.parse(revoked.body)).toMatchObject({ ok: true, revoked: 1 })
+
+    const afterRevoke = await call(port, '/api/mobile/v1/status', {
+      headers: { 'x-dsh-device-credential': payload.deviceCredential }
+    })
+    expect(afterRevoke.status).toBe(401)
+  })
+
+  it('applies a global pairing budget across forged client addresses', async () => {
+    const { port } = await startBridge('246810')
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const wrong = await call(port, '/api/mobile/v1/pair', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-real-ip': '10.0.0.' + (attempt + 1) },
+        body: JSON.stringify({ code: '000000', device: {} })
+      })
+      expect(wrong.status).toBe(401)
+    }
+    const locked = await call(port, '/api/mobile/v1/pair', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-real-ip': '10.0.0.99' },
+      body: JSON.stringify({ code: '246810', device: {} })
+    })
+    expect(locked.status).toBe(429)
+    expect(Number(locked.headers?.['retry-after'] ?? 0)).toBeGreaterThan(0)
   })
 
   it('serves the session list through the host gateway bridge', async () => {

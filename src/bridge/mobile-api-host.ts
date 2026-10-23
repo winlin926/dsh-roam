@@ -8,6 +8,11 @@ import type { MobileDeviceRegistry } from './mobile-device-registry.js'
 export const MOBILE_API_PREFIX = '/api/mobile'
 export const MOBILE_API_V1_PREFIX = '/api/mobile/v1'
 
+/** Pairing is the only unauthenticated write path; keep a global budget that
+ * ignores request headers, because X-Real-IP is caller-controlled. */
+const PAIRING_FAILURE_WINDOW_MS = 10 * 60 * 1000
+const PAIRING_FAILURE_LIMIT = 10
+
 const require = createRequire(import.meta.url)
 
 type RequestHandler = (request: IncomingMessage, response: ServerResponse) => unknown
@@ -180,6 +185,8 @@ class EmbeddedMobileApiHost implements MobileApiHost {
   private readonly streamingDevices = new Map<string, number>()
   /** 设备 → 具体响应对象，吊销凭据时要立刻断开这些流。 */
   private readonly deviceStreams = new Map<string, Set<ServerResponse>>()
+  /** 配对失败时间戳（全局，不按可伪造的请求头分桶）。 */
+  private readonly pairingFailures: number[] = []
 
   constructor(private readonly options: MobileApiHostOptions) {
     const upstream = loadUpstream()
@@ -199,9 +206,15 @@ class EmbeddedMobileApiHost implements MobileApiHost {
 
     this.provideApiProxy(upstream)
 
-    const guarded = upstream.createGuarded(options.ctx, upstream.authorized, () => undefined)
+    // The upstream falls back to a stateless 365-day Bearer token when no
+    // device credential is presented. That makes per-device revocation a lie:
+    // a lost phone can drop the header and keep using the old token. This
+    // deployment only accepts the revocable dshc_ credential.
+    const requireDeviceCredential = (request: IncomingMessage): boolean =>
+      Boolean(upstream.presentedCredential(request)) && upstream.authorized(request)
+    const guarded = upstream.createGuarded(options.ctx, requireDeviceCredential, () => undefined)
     this.preview = upstream.createPreviewService({
-      authorized: upstream.authorized,
+      authorized: requireDeviceCredential,
       protectedPorts: options.protectedPorts,
       onLog: options.log
     })
@@ -252,6 +265,53 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     if (!this.upgrades.has(`${MOBILE_API_V1_PREFIX}/preview`)) {
       throw new Error('dsh-mobile-plugin 缺少移动 API 预览路由')
     }
+    this.installPairingRateLimit()
+    this.installDeviceRevokeRoute()
+  }
+
+  /** A global, header-independent budget on the unauthenticated pairing route. */
+  private installPairingRateLimit(): void {
+    const path = `${MOBILE_API_V1_PREFIX}/pair`
+    const handler = this.routes.get(path)
+    if (!handler) return
+    this.routes.set(path, async (request, response) => {
+      const now = Date.now()
+      while (this.pairingFailures.length > 0 && this.pairingFailures[0]! <= now - PAIRING_FAILURE_WINDOW_MS) {
+        this.pairingFailures.shift()
+      }
+      if (this.pairingFailures.length >= PAIRING_FAILURE_LIMIT) {
+        const retryAfter = Math.max(1, Math.ceil((this.pairingFailures[0]! + PAIRING_FAILURE_WINDOW_MS - now) / 1000))
+        response.writeHead(429, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+          'retry-after': String(retryAfter)
+        })
+        response.end(JSON.stringify({
+          ok: false,
+          error: { code: 'rate-limited', message: '配对尝试过多，请稍后再试' }
+        }))
+        return
+      }
+      response.once('finish', () => {
+        if (response.statusCode === 401) this.pairingFailures.push(Date.now())
+        else if (response.statusCode === 200) this.pairingFailures.length = 0
+      })
+      await handler(request, response)
+    })
+  }
+
+  /**
+   * The upstream registers a no-op revoke endpoint. Rebind it to the real
+   * credential store so "移除设备" also kills the App's own credential.
+   */
+  private installDeviceRevokeRoute(): void {
+    const path = `${MOBILE_API_V1_PREFIX}/device-credential/revoke`
+    if (!this.routes.has(path)) return
+    this.routes.set(path, async (request, response) => {
+      const deviceId = this.deviceIdFor(request)
+      const revoked = deviceId ? this.revokeDevice(deviceId) : 0
+      writeJson(response, 200, { ok: true, revoked })
+    })
   }
 
   /**

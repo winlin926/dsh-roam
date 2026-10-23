@@ -1,5 +1,8 @@
 import { X509Certificate } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { userInfo } from 'node:os'
+import { promisify } from 'node:util'
 import { join } from 'node:path'
 import * as acme from 'acme-client'
 
@@ -13,6 +16,7 @@ export const ACME_CHALLENGE_PREFIX = '/.well-known/acme-challenge/'
 /** 证书剩不到 30 天就续期：Let's Encrypt 有效期 90 天，留出足够重试余量。 */
 const RENEW_BEFORE_MS = 30 * 24 * 60 * 60 * 1000
 /** 运行时每 12 小时检查一次，够用且不至于频繁碰 ACME 服务端。 */
+const execFileAsync = promisify(execFile)
 const RENEW_INTERVAL_MS = 12 * 60 * 60 * 1000
 
 export interface CertificateStatus {
@@ -113,6 +117,7 @@ export function createCertificateManager(options: CertificateManagerOptions): Ce
       const target = paths(domain)
       await writeAtomic(target.certificatePath, issued.certificate)
       await writeAtomic(target.keyPath, issued.key, 0o600)
+      await restrictPrivateKeyAcl(target.keyPath)
       lastError = undefined
     } catch (error) {
       lastError = { message: error instanceof Error ? error.message : String(error), domain }
@@ -191,7 +196,31 @@ async function readOrCreateAccountKey(stateDir: string): Promise<Buffer> {
     await mkdir(stateDir, { recursive: true })
     const key = await acme.crypto.createPrivateKey()
     await writeAtomic(path, key, 0o600)
+    await restrictPrivateKeyAcl(path)
     return key
+  }
+}
+
+/**
+ * Windows ignores POSIX mode bits. The frpc certificate directory may be
+ * world-readable, so the key is re-ACLed to the current user, SYSTEM and
+ * Administrators after every write. Other local accounts lose access.
+ */
+export async function restrictPrivateKeyAcl(path: string): Promise<void> {
+  if (process.platform !== 'win32') return
+  const user = userInfo().username
+  try {
+    await execFileAsync('icacls', [
+      path,
+      '/inheritance:r',
+      '/grant:r',
+      `${user}:(F)`,
+      '*S-1-5-18:(F)',
+      '*S-1-5-32-544:(F)'
+    ])
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`无法收紧私钥文件权限：${message}`)
   }
 }
 

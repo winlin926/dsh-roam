@@ -716,7 +716,7 @@ export class LanMobileBridge {
     const secure = connectionMode === 'tunnel' ? '; Secure' : ''
     response.setHeader(
       'set-cookie',
-      `dsh_mobile=${token}; HttpOnly; SameSite=Strict; Path=/${secure}; Max-Age=31536000`
+      `dsh_mobile=${token}; HttpOnly; SameSite=Strict; Path=/${secure}; Max-Age=2592000`
     )
   }
 
@@ -788,7 +788,7 @@ export class LanMobileBridge {
 
     const transportAddress = normalizeRemoteAddress(request.socket.remoteAddress ?? '')
     if (!isPrivateAddress(transportAddress)) return this.text(response, 403, 'Private network only.')
-    const connectionMode = this.requestConnectionMode(request, transportAddress)
+    const connectionMode = this.requestConnectionMode(request)
     const forwardedAddress =
       firstHeaderValue(request.headers['cf-connecting-ip']) ??
       firstHeaderValue(request.headers['x-forwarded-for'])
@@ -1367,16 +1367,16 @@ export class LanMobileBridge {
     if (origin && host && new URL(origin).host !== host) throw new Error('Cross-origin request rejected.')
   }
 
-  private requestConnectionMode(
-    request: IncomingMessage,
-    transportAddress: string
-  ): MobileConnectionMode {
-    if (!isLoopbackAddress(transportAddress)) return 'lan'
-    const host = (request.headers.host ?? '').split(':', 1)[0]?.toLowerCase() ?? ''
+  /**
+   * The public entry is decided by the Host the caller asked for, not by the
+   * transport address: a reverse proxy may forward to a LAN address, and
+   * treating that as LAN would skip the 6-digit PIN. A trailing dot and an
+   * explicit port are normalized away before the comparison.
+   */
+  private requestConnectionMode(request: IncomingMessage): MobileConnectionMode {
+    const host = requestHostname(request.headers.host)
     const forwardedAddress = firstHeaderValue(request.headers['cf-connecting-ip'])
     const ray = firstHeaderValue(request.headers['cf-ray'])
-    // 固定公网域名经 frpc 回到本机时，Host 是用户自己的域名，源地址却是 127.0.0.1。
-    // 只靠 cloudflared/pinggy 的 Host 会把这条入口误判成局域网，从而跳过 6 位连接密码。
     return isInternetTunnelHost(host) || Boolean(forwardedAddress && ray) || host === this.configuredPublicHost()
       ? 'tunnel'
       : 'lan'
@@ -1386,7 +1386,7 @@ export class LanMobileBridge {
     const configured = this.options.publicUrl?.()
     if (typeof configured !== 'string' || configured.length === 0) return undefined
     try {
-      return new URL(configured).hostname.toLowerCase()
+      return new URL(configured).hostname.toLowerCase().replace(/\.$/, '')
     } catch {
       return undefined
     }
@@ -2059,6 +2059,16 @@ async function readBody(request: IncomingMessage): Promise<string> {
     chunks.push(buffer)
   }
   return Buffer.concat(chunks).toString('utf8')
+}
+
+function requestHostname(value: string | string[] | undefined): string {
+  const header = firstHeaderValue(value)
+  if (!header) return ''
+  try {
+    return new URL('http://' + header).hostname.toLowerCase().replace(/\.$/, '')
+  } catch {
+    return ''
+  }
 }
 
 function firstHeaderValue(value: string | string[] | undefined): string | undefined {

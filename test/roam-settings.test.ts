@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import net, { type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -33,17 +33,11 @@ const QR_OPTIONS = { type: 'svg' as const, margin: 1, width: 260 }
 const STATE_FIELDS = [
   'ready',
   'qrSvg',
+  'lanQrSvg',
   'pairingUrl',
   'lanUrls',
-  'desktopUrl',
   'connected',
   'browserConnected',
-  'onlineDeviceCount',
-  'aihubQrSvg',
-  'aihubLanUrls',
-  'aihubAvailable',
-  'aihubError',
-  'aihubPairingExpiresAt',
   'tunnelActive',
   'tunnelLoading',
   'tunnelProvider',
@@ -60,7 +54,6 @@ const STATE_FIELDS = [
   'expectedPort',
   'portMatchesTunnel',
   'lastPublicUrlCheck',
-  'devices',
   'certificate',
   'version',
   'now',
@@ -152,7 +145,6 @@ async function startHarness(config: PluginConfig = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-roam-run-'))
   tempDirectories.push(directory)
   process.env.DSH_HOME = directory
-  await writeFile(join(directory, 'relay.json'), JSON.stringify({ instanceId: 'test-instance', name: 'Test PC' }))
   const pinFile = config.pinFile ?? join(directory, 'mobile-pairing-pin.json')
   const settingsFile = config.settingsFile ?? join(directory, 'settings.json')
   applyPhoneBridge(harnessContext(routes) as never, { port: portCounter++, ...config, pinFile, settingsFile })
@@ -263,28 +255,6 @@ describe('fixed public URL validation', () => {
 })
 
 describe('phone bridge fixed public URL routes', () => {
-  it('keeps the device when the revoke backend is unavailable', async () => {
-    const settingsFile = await tempSettingsFile()
-    const { port, directory } = await startHarness({ settingsFile })
-    const deviceFile = join(directory, 'dsh-roam', 'mobile-devices.json')
-    await mkdir(join(directory, 'dsh-roam'), { recursive: true })
-    await writeFile(deviceFile, JSON.stringify([{
-      deviceId: 'device-1',
-      name: 'Test phone',
-      platform: 'android',
-      firstSeenAt: Date.now() - 1000,
-      lastSeenAt: Date.now()
-    }]))
-    const before = await getJson(port, '/phone-bridge/state')
-    expect((before.body.devices as unknown[]).length).toBe(1)
-
-    const removed = await postJson(port, '/phone-bridge/devices/remove', { deviceId: 'device-1' })
-    expect(removed.status).toBe(503)
-    expect(removed.body.ok).toBe(false)
-    expect((removed.body.devices as unknown[]).length).toBe(1)
-    expect(JSON.parse(await readFile(deviceFile, 'utf8'))).toHaveLength(1)
-  })
-
   it('rejects a rebinding Host header on the settings routes', async () => {
     const settingsFile = await tempSettingsFile()
     const { port } = await startHarness({ settingsFile })
@@ -342,7 +312,6 @@ describe('phone bridge fixed public URL routes', () => {
 
     const state = await readyState(port)
     for (const field of STATE_FIELDS) expect(state).toHaveProperty(field)
-    expect(Array.isArray(state.devices)).toBe(true)
     expect(state.certificate).toEqual(expect.objectContaining({ selfSigned: expect.any(Boolean), pending: expect.any(Boolean) }))
     expect(state.publicUrl).toBe('https://dsh.example.com')
     expect(state.publicUrlConfigured).toBe(true)
@@ -417,21 +386,6 @@ describe('phone bridge fixed public URL routes', () => {
     expect(fallback.status).toBe(409)
     expect(fallback.body.error).toBe('已配置固定公网域名，临时隧道已停用。')
     expect(fallback.body.mode).toBe('fixed')
-  })
-
-  it('lists AI-HUB LAN addresses and omits the QR when the mobile API host is unavailable', async () => {
-    const settingsFile = await tempSettingsFile()
-    const { port } = await startHarness({ settingsFile })
-    await postJson(port, '/phone-bridge/pin', { pin: '051109' })
-
-    const state = await readyState(port)
-    expect(Array.isArray(state.aihubLanUrls)).toBe(true)
-    expect((state.aihubLanUrls as string[]).length).toBeGreaterThan(0)
-    expect(String((state.aihubLanUrls as string[])[0])).toMatch(/^http:\/\//)
-    // The test harness has no DSH gateway, so the embedded mobile API is
-    // unavailable and must not advertise a QR that can never pair.
-    expect(state.aihubQrSvg).toBeNull()
-    expect(state.aihubPairingExpiresAt).toBeNull()
   })
 
   it('stops the temporary tunnel when a fixed public domain is saved', async () => {

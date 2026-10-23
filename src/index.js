@@ -1,14 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs'
 import net from 'node:net'
-import { homedir, hostname } from 'node:os'
-import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
-import { LanMobileBridge, isPrivateAddress } from './bridge/lan-mobile-bridge.js'
-import { createMobileApiHost } from './bridge/mobile-api-host.js'
+import { LanMobileBridge } from './bridge/lan-mobile-bridge.js'
 import { createCertificateManager } from './bridge/acme-certificate.js'
-import { createMobileDeviceRegistry } from './bridge/mobile-device-registry.js'
-import { createIpRegionResolver, ipRegionDirectory } from './bridge/ip-region.js'
 import { createFilePairingPinStore } from './bridge/pairing-pin-store.js'
 import {
   migrateStoredInitialPin,
@@ -36,7 +33,6 @@ const FRPC_CERTIFICATE_DIR = join(
   'FrpcWorkingDirectory',
 )
 const CERTIFICATE_PATH = '/phone-bridge/certificate'
-const DESKTOP_URL_PATH = '/phone-bridge/desktop-url'
 const STATE_PATH = '/phone-bridge/state'
 const SETTINGS_PATH = '/phone-bridge/settings'
 const PUBLIC_URL_TEST_PATH = '/phone-bridge/public-url/test'
@@ -45,21 +41,10 @@ const TUNNEL_PATH = '/phone-bridge/tunnel'
 const TUNNEL_FALLBACK_PATH = '/phone-bridge/tunnel/fallback'
 const DISCONNECT_PATH = '/phone-bridge/disconnect'
 const PIN_PATH = '/phone-bridge/pin'
-const DEVICE_REMOVE_PATH = '/phone-bridge/devices/remove'
 const TUNNEL_DISABLED_MESSAGE = '已配置固定公网域名，临时隧道已停用。'
-/** Same SVG options the desktop page uses, so a QR that scans there scans here. */
+/** The settings panel and phone page share one QR geometry. */
 const QR_OPTIONS = { type: 'svg', margin: 1, width: 260 }
 const MAX_BODY_BYTES = 64 * 1024
-
-/**
- * 只有公网地址才查归属地：经隧道转发时本机看到的是 127.0.0.1，局域网直连看到的是内网地址，
- * 两者都不是手机的真实位置，留着只会误导人。
- */
-function publicAddress(address) {
-  if (typeof address !== 'string') return undefined
-  const value = address.startsWith('::ffff:') ? address.slice(7) : address
-  return isPrivateAddress(value) ? undefined : value
-}
 
 /** 固定公网域名的主机名：证书只为它签发。 */
 function publicDomain(publicUrl) {
@@ -198,17 +183,11 @@ function idleState(publicUrl = null, lastPublicUrlCheck = null, expectedPort = P
   return {
     ready: false,
     qrSvg: null,
+    lanQrSvg: null,
     pairingUrl: null,
     lanUrls: [],
-    desktopUrl: null,
     connected: false,
     browserConnected: false,
-    onlineDeviceCount: 0,
-    aihubQrSvg: null,
-    aihubLanUrls: [],
-    aihubPairingExpiresAt: null,
-    aihubAvailable: false,
-    aihubError: null,
     tunnelActive: false,
     tunnelLoading: false,
     tunnelProvider: null,
@@ -218,7 +197,6 @@ function idleState(publicUrl = null, lastPublicUrlCheck = null, expectedPort = P
     pinConsent: false,
     pinExpiresAt: null,
     expiresAt: null,
-    devices: [],
     certificate: null,
     version: PLUGIN_VERSION,
     now: Date.now(),
@@ -234,10 +212,9 @@ function idleState(publicUrl = null, lastPublicUrlCheck = null, expectedPort = P
 
 /**
  * The settings panel's whole view of the bridge, served from the harness origin
- * so the page needs no cross-origin request and no bridge cookie. The QR is
- * built here on every read, from the pairing URL in the snapshot, exactly like
- * the desktop page: a consumed or expired token would otherwise render a dead
- * code, so an unusable one is rotated before the SVG is generated.
+ * so the page needs no cross-origin request and no bridge cookie. A consumed or
+ * expired pairing token would otherwise render a dead QR, so an unusable one is
+ * rotated before the SVG is generated.
  */
 async function bridgeState(bridge, runtime) {
   const publicUrl = runtime?.publicUrl ?? null
@@ -247,7 +224,7 @@ async function bridgeState(bridge, runtime) {
   if (!initial || initial.running !== true) return idleState(publicUrl, lastPublicUrlCheck, expectedPort)
   if (!initial.pairingUrl) bridge.rotatePairingToken()
   const snapshot = bridge.snapshot()
-  const pins = bridge.desktopPinFields()
+  const pins = bridge.pairingPinFields()
   const pairingUrl = snapshot.pairingUrl ?? null
   const bridgePort = Number.isInteger(snapshot.port) ? snapshot.port : null
   // The LAN card lists only addresses a phone on the same Wi-Fi can open: the
@@ -257,44 +234,14 @@ async function bridgeState(bridge, runtime) {
     if (snapshot.tunnelUrl && url.startsWith(snapshot.tunnelUrl)) return false
     return true
   })
-  const devices = runtime?.devices?.() ?? []
-  const onlineDeviceCount = devices.filter((device) => device.online === true).length
-  const aihubLanUrls = bridgePort ? bridge.lanAddressCandidates().map((address) => `http://${address}:${bridgePort}`) : []
-  const aihubPin = pins.pinConsent === true ? pins.pairingPin : undefined
-  const aihubPairing = aihubPin ? runtime?.aihubPairingCode?.() : undefined
-  const aihubPairingCode = aihubPairing?.code
-  const aihubPairingExpiresAt = aihubPairing?.expiresAt ?? null
-  const relay = runtime?.relayState?.() ?? {}
-  const relayInstanceId = typeof relay.instanceId === 'string' ? relay.instanceId : undefined
-  const relayName = typeof relay.name === 'string' && relay.name ? relay.name : hostname()
-  const aihubPairingText =
-    aihubPairingCode && relayInstanceId && aihubLanUrls.length > 0
-      ? `dshpair://v1?data=${encodeURIComponent(JSON.stringify({
-          type: 'dsh-pair',
-          version: 1,
-          name: relayName,
-          instanceId: relayInstanceId,
-          code: aihubPairingCode,
-          relayUrl: '',
-          lanUrls: aihubLanUrls,
-          lanCandidates: aihubLanUrls,
-        }))}`
-      : null
-  const aihubQrSvg = aihubPairingText ? await QRCode.toString(aihubPairingText, QR_OPTIONS) : null
   return {
     ready: true,
     qrSvg: pairingUrl ? await QRCode.toString(pairingUrl, QR_OPTIONS) : null,
+    lanQrSvg: lanUrls[0] ? await QRCode.toString(lanUrls[0], QR_OPTIONS) : null,
     pairingUrl,
     lanUrls,
-    desktopUrl: bridge.createDesktopUrl() ?? null,
     connected: snapshot.connected === true,
     browserConnected: snapshot.connected === true,
-    onlineDeviceCount,
-    aihubQrSvg,
-    aihubLanUrls,
-    aihubPairingExpiresAt,
-    aihubAvailable: runtime?.aihubAvailable?.() === true,
-    aihubError: runtime?.aihubError?.() ?? null,
     tunnelActive: snapshot.tunnelActive === true,
     tunnelLoading: snapshot.tunnelLoading === true,
     tunnelProvider: snapshot.tunnelProvider ?? null,
@@ -304,7 +251,6 @@ async function bridgeState(bridge, runtime) {
     pinConsent: pins.pinConsent === true,
     pinExpiresAt: pins.pinExpiresAt ?? null,
     expiresAt: snapshot.expiresAt ?? null,
-    devices,
     certificate: runtime?.certificate ? await runtime.certificate() : null,
     version: PLUGIN_VERSION,
     now: Date.now(),
@@ -400,7 +346,7 @@ function registerLoopbackRoute(ctx, label, method, path, handle) {
   }, 'dsh-roam ' + label)
 }
 
-function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevice) {
+function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl) {
   const state = () => bridgeState(bridge(), runtime)
   const unavailable = (response) =>
     writeJson(
@@ -547,79 +493,24 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevi
     )
   })
 
-  registerLoopbackRoute(ctx, DEVICE_REMOVE_PATH, 'POST', DEVICE_REMOVE_PATH, async (request, response) => {
-    const body = await readJsonBody(request)
-    const deviceId = typeof body?.deviceId === 'string' ? body.deviceId.trim() : ''
-    if (!deviceId) {
-      return writeJson(response, 400, result(false, '请提供要移除的设备。', await state()))
-    }
-    try {
-      revokeDevice(deviceId)
-    } catch (error) {
-      return writeJson(response, 503, result(false, errorMessage(error), await state()))
-    }
-    writeJson(response, 200, result(true, null, await state()))
-  })
 }
 
 export function apply(ctx, config = {}) {
   // 数据目录在装配时解析，而不是模块加载时：测试和多个插件实例可以各自指向临时目录。
   const dataDir = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'dsh-roam')
-  const dshHome = dirname(dataDir)
-  const readRelayState = () => {
-    try {
-      return JSON.parse(readFileSync(join(dshHome, 'relay.json'), 'utf8'))
-    } catch {
-      return {}
-    }
-  }
   const cacheDir = join(dataDir, 'bin')
   const pinFile = config.pinFile ?? join(dataDir, 'mobile-pairing-pin.json')
   const settingsFile = config.settingsFile ?? join(dataDir, 'settings.json')
   const acmeStateDir = join(dataDir, 'acme')
   const acmeChallengeDir = join(acmeStateDir, 'challenge')
-  const mobileDevices = createMobileDeviceRegistry(join(dataDir, 'mobile-devices.json'))
-  const ipRegion = createIpRegionResolver(ipRegionDirectory(dataDir))
-  let ipRegionInstallStarted = false
-  /** 有设备要查归属地时才下载离线库；没人连过就不该占这几十兆流量。 */
-  const ensureIpRegionInstalled = () => {
-    if (ipRegionInstallStarted) return
-    ipRegionInstallStarted = true
-    void ipRegion.ensureInstalled()
-      .then((installed) => {
-        if (!installed) ipRegionInstallStarted = false
-      })
-      .catch(() => {
-        ipRegionInstallStarted = false
-      })
-  }
   const holder = { bridge: undefined }
   const bridge = () => holder.bridge
-  const mobileApiHolder = { current: undefined }
   const savedSettings = readBridgeSettings(settingsFile)
   const runtime = {
     settingsFile,
-    relayState: readRelayState,
     publicUrl: savedSettings.publicUrl,
     expectedPort: config.publicPort ?? PORT_START,
     lastPublicUrlCheck: null,
-    aihubPairingCode: () => mobileApiHolder.current?.pairingCode(),
-    aihubAvailable: () => mobileApiHolder.current?.available === true,
-    aihubError: () => mobileApiHolder.current?.error,
-    devices: () => {
-      const list = mobileDevices.list()
-      if (list.some((device) => device.lastIp)) ensureIpRegionInstalled()
-      const online = mobileApiHolder.current?.onlineDeviceIds() ?? new Set()
-      return list.map((device) => {
-        const address = publicAddress(device.lastIp)
-        return {
-          ...device,
-          lastIp: address,
-          region: address ? ipRegion.describe(address) : undefined,
-          online: online.has(device.deviceId),
-        }
-      })
-    },
   }
   const certificates = createCertificateManager({
     domain: () => publicDomain(runtime.publicUrl),
@@ -636,46 +527,7 @@ export function apply(ctx, config = {}) {
   const checkPublicUrl =
     typeof config.probePublicUrl === 'function' ? config.probePublicUrl : probePublicUrl
 
-  ctx.effect(() => {
-    const disposeRoute = ctx.webServer.register({
-      kind: 'exact',
-      path: DESKTOP_URL_PATH,
-      handler(request, response) {
-        if (!isLoopback(request.socket?.remoteAddress) || !isLoopbackHost(request.headers?.host)) {
-          writeText(response, 403, 'Desktop only.')
-          return
-        }
-        if (request.method !== 'GET' && request.method !== 'HEAD') {
-          response.writeHead(405, { allow: 'GET, HEAD', 'cache-control': 'no-store' })
-          response.end()
-          return
-        }
-        const url = holder.bridge?.createDesktopUrl()
-        if (!url) {
-          writeJson(response, 503, { ready: false })
-          return
-        }
-        if (request.method === 'HEAD') {
-          response.writeHead(200, {
-            'content-type': 'application/json; charset=utf-8',
-            'cache-control': 'no-store',
-          })
-          response.end()
-          return
-        }
-        writeJson(response, 200, { ready: true, url })
-      },
-    })
-    return () => disposeRoute()
-  }, 'dsh-roam desktop url')
-
-  registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, (deviceId) => {
-    const api = mobileApiHolder.current
-    if (!api?.available) throw new Error('AI-HUB 移动 API 未就绪，未移除设备。')
-    const revoked = api.revokeDevice(deviceId)
-    mobileDevices.forget(deviceId)
-    return revoked
-  })
+  registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl)
 
   registerLoopbackRoute(ctx, 'certificate', 'POST', CERTIFICATE_PATH, async (request, response) => {
     if (!publicDomain(runtime.publicUrl)) {
@@ -693,49 +545,15 @@ export function apply(ctx, config = {}) {
       const port = config.port ?? await choosePort(PORT_START)
       const logos = brandLogoPaths()
       const pinStore = createFilePairingPinStore(pinFile)
-      mobileApiHolder.current = createMobileApiHost({
-        ctx,
-        devices: mobileDevices,
-        pin: () => instance?.pairingPin(),
-        pinEnabled: () => instance?.pairingPinEnabled() === true,
-        port: () => instance?.localPort(),
-        tunnel: () => {
-          const snapshot = instance?.snapshot()
-          return {
-            active: snapshot?.tunnelActive === true,
-            ...(snapshot?.tunnelUrl ? { url: snapshot.tunnelUrl } : {}),
-            ...(snapshot?.tunnelError ? { error: snapshot.tunnelError } : {}),
-          }
-        },
-        protectedPorts: () => {
-          const ports = new Set()
-          const hostPort = Number(ctx.webServer?.port)
-          if (Number.isInteger(hostPort) && hostPort > 0) ports.add(hostPort)
-          const bridgePort = instance?.localPort()
-          if (Number.isInteger(bridgePort) && bridgePort > 0) ports.add(bridgePort)
-          return ports
-        },
-        log: (message) => ctx.logger?.warn?.(message),
-      })
       instance = new LanMobileBridge({
         port,
         harnessUrl: () => harnessOrigin(ctx.webServer),
         harnessAuthToken: () => launchToken(ctx.connection, harnessOrigin(ctx.webServer)),
-        mobileApi: mobileApiHolder.current,
         locale: 'zh',
         cloudflaredCacheDir: cacheDir,
         pairingPinStore: pinStore,
         publicUrl: () => runtime.publicUrl ?? undefined,
         acmeChallengeDir: () => acmeChallengeDir,
-        frameAncestors: () => {
-          const origin = harnessOrigin(ctx.webServer)
-          if (!origin) return undefined
-          try {
-            return new URL(origin).origin
-          } catch {
-            return undefined
-          }
-        },
         ...(logos ? { brandLogoPaths: logos } : {}),
       })
       holder.bridge = instance
@@ -750,7 +568,6 @@ export function apply(ctx, config = {}) {
       holder.bridge = undefined
       await ready.catch(() => undefined)
       if (instance) await instance.stop()
-      mobileApiHolder.current?.close()
     }
   }, 'dsh-roam')
 }

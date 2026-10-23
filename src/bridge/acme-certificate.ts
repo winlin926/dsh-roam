@@ -191,7 +191,9 @@ async function requestCertificate(request: {
 async function readOrCreateAccountKey(stateDir: string): Promise<Buffer> {
   const path = join(stateDir, 'acme-account.key')
   try {
-    return await readFile(path)
+    const key = await readFile(path)
+    await restrictPrivateKeyAcl(path)
+    return key
   } catch {
     await mkdir(stateDir, { recursive: true })
     const key = await acme.crypto.createPrivateKey()

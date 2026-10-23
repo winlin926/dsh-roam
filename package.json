@@ -1,7 +1,7 @@
 {
   "name": "dsh-roam",
-  "version": "0.3.1",
-  "description": "把电脑上的 DeepSeek Harness 会话漫游到手机：浏览器扫码即用，AI-HUB App 共用同一地址和配对码。",
+  "version": "1.0.0",
+  "description": "把电脑上的 DeepSeek Harness 会话带到手机浏览器：扫码即用，不安装 App，不依赖中转账号。",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -43,8 +43,7 @@
     "手机扫码",
     "手机继续会话",
     "远程访问",
-    "AI-HUB",
-    "ai-hub"
+    "browser"
   ],
   "files": [
     "lib/**/*.js",
@@ -64,7 +63,6 @@
   },
   "dependencies": {
     "acme-client": "5.4.0",
-    "dsh-mobile-plugin": "0.1.92",
     "qrcode": "1.5.4",
     "ws": "8.18.0"
   },

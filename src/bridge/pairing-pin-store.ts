@@ -1,4 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
@@ -48,6 +50,7 @@ export function writePairingPinState(path: string, state: PairingPinState): bool
   try {
     mkdirSync(dirname(path), { recursive: true })
     writeFileSync(temporary, `${JSON.stringify(document, undefined, 2)}\n`, { mode: 0o600 })
+    restrictSecretAcl(temporary)
     // Windows 的 renameSync 使用 MoveFileEx(REPLACE_EXISTING)，直接覆盖；先删旧文件会把原子替换变成两个步骤。
     renameSync(temporary, path)
     return true
@@ -58,5 +61,27 @@ export function writePairingPinState(path: string, state: PairingPinState): bool
       // The caller already treats a false return as a failed write.
     }
     return false
+  }
+}
+
+/** Windows ignores POSIX mode bits; remove inherited access before the atomic rename. */
+function restrictSecretAcl(path: string): void {
+  if (process.platform !== 'win32') return
+  try {
+    execFileSync(
+      'icacls',
+      [
+        path,
+        '/inheritance:r',
+        '/grant:r',
+        `${userInfo().username}:(F)`,
+        '*S-1-5-18:(F)',
+        '*S-1-5-32-544:(F)'
+      ],
+      { stdio: 'ignore', windowsHide: true }
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`无法收紧连接密码文件权限：${message}`)
   }
 }

@@ -35,16 +35,11 @@ const HARNESS_ORIGIN = 'http://127.0.0.1:58562'
 const STATE_FIELDS = [
   'ready',
   'qrSvg',
+  'lanQrSvg',
   'pairingUrl',
   'lanUrls',
-  'desktopUrl',
   'connected',
   'browserConnected',
-  'onlineDeviceCount',
-  'aihubQrSvg',
-  'aihubLanUrls',
-  'aihubAvailable',
-  'aihubError',
   'tunnelActive',
   'tunnelLoading',
   'tunnelProvider',
@@ -195,8 +190,8 @@ describe('phone bridge settings routes', () => {
     expect(state.ready).toBe(true)
     expect(state.qrSvg).toMatch(/^<svg/)
     expect(state.qrSvg).toContain('<path')
+    expect(state.lanQrSvg).toBe(state.qrSvg)
     expect(state.pairingUrl).toMatch(/^http:\/\/.+\/pair\?token=/)
-    expect(state.desktopUrl).toContain('/desktop?k=')
     expect(state.connected).toBe(false)
     expect(state.tunnelActive).toBe(false)
     expect(state.tunnelError).toBeNull()
@@ -221,22 +216,18 @@ describe('phone bridge settings routes', () => {
     }
   })
 
-  it('never hands the desktop bootstrap token to a non-loopback caller', async () => {
+  it('keeps the state route closed to non-loopback callers', async () => {
     const { routes, port } = await startHarness()
-    const state = await readyState(port)
-    const token = new URL(String(state.desktopUrl)).searchParams.get('k')
-    expect(token).toBeTruthy()
-
+    await readyState(port)
     const stateRoute = routes.find((route) => route.path === '/phone-bridge/state')
     expect(stateRoute).toBeTruthy()
+
     const lanCaller = await callDirectly(stateRoute!, '192.168.1.50')
     expect(lanCaller.status).toBe(403)
-    expect(lanCaller.body).not.toContain(String(token))
-    expect(lanCaller.body).not.toContain('/desktop')
+    expect(lanCaller.body).not.toContain('pairingUrl')
 
     const mappedCaller = await callDirectly(stateRoute!, '::ffff:192.168.1.51')
     expect(mappedCaller.status).toBe(403)
-    expect(mappedCaller.body).not.toContain(String(token))
   })
 
   it('enables, falls back, and disables the tunnel through the same-origin routes', async () => {
@@ -275,7 +266,7 @@ describe('phone bridge settings routes', () => {
     const { port } = await startHarness()
     const state = await readyState(port)
     const pairedToken = new URL(String(state.pairingUrl)).searchParams.get('token')
-    const bridgePort = new URL(String(state.desktopUrl)).port
+    const bridgePort = new URL(String(state.pairingUrl)).port
     expect(pairedToken).toBeTruthy()
 
     const paired = await fetch(

@@ -5,7 +5,6 @@ import { networkInterfaces, tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import QRCode from 'qrcode'
 import WebSocket from 'ws'
 import {
   ensureCloudflaredBinary,
@@ -19,13 +18,11 @@ import {
 import { ACME_CHALLENGE_PREFIX } from './acme-certificate.js'
 import { startPinggyTunnel } from './pinggy-tunnel.js'
 import {
-  renderDesktopPairingPage,
   renderMobilePage,
   renderMobileReconnectPage,
   renderPairingPinPage
 } from './lan-mobile-pages.js'
 import type { PairingPinState, PairingPinStore } from './pairing-pin-store.js'
-import { isMobileApiPath, MOBILE_API_V1_PREFIX, type MobileApiHost } from './mobile-api-host.js'
 
 const MAX_BODY_BYTES = 64 * 1024
 const PAIRING_TTL_MS = 5 * 60 * 1000
@@ -41,11 +38,6 @@ const MUX_RECONNECT_CAP_MS = 30_000
 /** Gateway stream carrier: one WebSocket multiplexing every logical stream. */
 const REMOTE_STREAM_MUX_PATH = '/api/remote.mux'
 
-/**
- * AI-HUB 的配对端点：直连模式打插件局域网代理那套 `/__lan_pair`，
- * 中转模式打 `/pair`。两种都归到移动 API 的配对路由。
- */
-const AI_HUB_PAIR_PATHS = new Set(['/__lan_pair', '/pair'])
 /** Gateway-internal stream delivering forwarded Cordis events. */
 const REMOTE_EVENT_STREAM_ENDPOINT = '$events'
 /** Gateway-internal unary endpoint settling one forwarded event. */
@@ -107,10 +99,8 @@ export interface LanMobileBridgeOptions {
   harnessUrl(): string | undefined
   /** Per-process Harness launch token, traded once for a session cookie. */
   harnessAuthToken?(): string | undefined
-  mobileApi?: MobileApiHost
   locale?: 'en' | 'zh' | (() => 'en' | 'zh')
   brandLogoPaths?: { light: string; dark: string }
-  appIconPath?: string
   port?: number
   cloudflaredCacheDir?: string
   cloudflaredPath?: string
@@ -127,8 +117,6 @@ export interface LanMobileBridgeOptions {
   lanAddress?: string
   /** Replaces the real default-route probe; tests inject their own. */
   probeDefaultRouteAddress?: () => Promise<string | undefined>
-  /** Loopback harness origin allowed to embed the desktop page. Absent keeps X-Frame-Options DENY. */
-  frameAncestors?: string | (() => string | undefined)
   /** Validated fixed public origin; when present it leads every pairing URL. */
   publicUrl?: () => string | undefined
   /** HTTP-01 挑战文件目录：公网入口必须能取到它，证书才签得下来。 */
@@ -140,7 +128,6 @@ export interface LanMobileBridgeSnapshot {
   connected: boolean
   port?: number
   pairingUrl?: string
-  desktopUrl?: string
   expiresAt?: number
   tunnelActive?: boolean
   tunnelLoading?: boolean
@@ -150,9 +137,7 @@ export interface LanMobileBridgeSnapshot {
 }
 
 interface MobileSession {
-  token: string
-  remoteAddress: string
-  /** When the browser first paired; absolute expiry and the IP fallback window use it. */
+  /** When the browser first paired; drives the absolute session expiry. */
   pairedAt: number
   /** Last request carrying this session cookie; drives the "browser connected" view. */
   lastSeenAt?: number
@@ -206,7 +191,7 @@ export class LanMobileBridge {
   private tunnelLaunch?: Promise<void>
   private readonly sessions = new Map<string, MobileSession>()
   private readonly suspendedSessions = new Map<string, MobileSession>()
-  /** Sessions moved here only by a desktop disconnect. Reconnect will not honor anything else. */
+  /** Sessions moved here only by the settings panel's disconnect. */
   private readonly resumableSessions = new Map<string, MobileSession>()
   private readonly pendingQuestions = new Map<string, PendingMobileQuestion>()
   private ephemeralPin?: string
@@ -214,8 +199,6 @@ export class LanMobileBridge {
   private readonly pinFailuresByIp = new Map<string, number[]>()
   private pinFailuresGlobal: number[] = []
   private tunnelExpectedStop = false
-  private lastTunnelProvider?: InternetTunnelProvider
-  private unexpectedlyClosed = false
   private tunnelExpiresAt?: number
   /** Client generation id from the event stream's `ready` frame; results quote it. */
   private eventClientId?: string
@@ -224,39 +207,14 @@ export class LanMobileBridge {
   private readonly now: () => number
   private muxAbort?: AbortController
   private muxTask?: Promise<void>
+  private connectionTimer?: ReturnType<typeof setInterval>
   private readonly sessionStreamAborts = new Set<AbortController>()
   private lastConnected = false
-  private readonly desktopSessionToken = randomBytes(32).toString('base64url')
-  private desktopBootstrapToken?: string
   private lanAddress?: string
   private lanAddressResolved = false
 
   constructor(private readonly options: LanMobileBridgeOptions) {
     this.now = options.now ?? Date.now
-  }
-
-  localPort(): number | undefined {
-    return this.port
-  }
-
-  pairingPin(): string | undefined {
-    const view = this.readPairingPin()
-    return view.consent ? view.pin : undefined
-  }
-
-  pairingPinEnabled(): boolean {
-    return this.storedPinState().pinConsent === true
-  }
-
-  createDesktopUrl(): string | undefined {
-    if (!this.server || !this.port) return undefined
-    // The settings page re-reads this URL on every poll before the browser
-    // follows it; a fresh token on every read would invalidate that link.
-    // Consumption still clears the token.
-    if (!this.desktopBootstrapToken) {
-      this.desktopBootstrapToken = randomBytes(32).toString('base64url')
-    }
-    return `http://127.0.0.1:${this.port}/desktop?k=${this.desktopBootstrapToken}`
   }
 
   async start(): Promise<LanMobileBridgeSnapshot> {
@@ -280,15 +238,14 @@ export class LanMobileBridge {
         // the renderers in step without polling either of them.
         .finally(() => this.syncConnected())
     })
-    this.server.on('upgrade', (request, socket, head) => {
-      if (this.options.mobileApi?.handleUpgrade(request, socket, head)) return
-      socket.destroy()
-    })
+    this.server.on('upgrade', (_request, socket) => socket.destroy())
     await new Promise<void>((resolve, reject) => {
       this.server?.once('error', reject)
       this.server?.listen(this.options.port ?? 0, '0.0.0.0', resolve)
     })
     this.port = (this.server.address() as AddressInfo).port
+    this.connectionTimer ??= setInterval(() => this.syncConnected(), 5_000)
+    this.connectionTimer.unref?.()
     this.syncConnected()
     return this.snapshot()
   }
@@ -297,9 +254,12 @@ export class LanMobileBridge {
     const server = this.server
     this.server = undefined
     this.port = undefined
+    if (this.connectionTimer) {
+      clearInterval(this.connectionTimer)
+      this.connectionTimer = undefined
+    }
     this.pairingToken = undefined
     this.pairingExpiresAt = undefined
-    this.desktopBootstrapToken = undefined
     // Wait for an in-flight launch so the tunnel it spawns is stopped below
     // instead of outliving the bridge (and the app).
     if (this.tunnelLaunch) {
@@ -317,9 +277,7 @@ export class LanMobileBridge {
     this.ephemeralPin = undefined
     this.ephemeralPinExpiresAt = undefined
     this.clearPinFailures()
-    this.clearTunnelDeathFlags()
     this.tunnelExpiresAt = undefined
-    this.options.mobileApi?.close()
     for (const abort of this.sessionStreamAborts) abort.abort()
     this.sessionStreamAborts.clear()
     this.syncConnected()
@@ -353,8 +311,7 @@ export class LanMobileBridge {
       this.tunnelActive = false
       this.tunnelLoading = false
       this.tunnelError = undefined
-      this.clearTunnelDeathFlags()
-      this.tunnelExpiresAt = undefined
+        this.tunnelExpiresAt = undefined
       return this.snapshot()
     }
 
@@ -376,8 +333,7 @@ export class LanMobileBridge {
     try {
       await launch
       this.tunnelActive = true
-      this.clearTunnelDeathFlags()
-      this.armTunnelProcess(this.tunnelInstance)
+        this.armTunnelProcess(this.tunnelInstance)
     } catch (error) {
       this.tunnelActive = false
       this.tunnelError = error instanceof Error ? error.message : String(error)
@@ -405,8 +361,7 @@ export class LanMobileBridge {
     this.tunnelLaunch = launch
     try {
       await launch
-      this.clearTunnelDeathFlags()
-      this.armTunnelProcess(this.tunnelInstance)
+        this.armTunnelProcess(this.tunnelInstance)
     } catch (error) {
       this.tunnelError = error instanceof Error ? error.message : String(error)
     } finally {
@@ -509,7 +464,7 @@ export class LanMobileBridge {
     }
     // The pairing token is single-use (consumed on approval) and short-lived.
     // Tunnel and listener state must stay visible regardless, otherwise the
-    // desktop window loses the connection-mode UI right after a phone pairs.
+    // settings panel loses the connection-mode UI right after a phone pairs.
     const tokenValid = this.pairingTokenValid()
     const pairingUrl = this.pairingUrls()[0]
     return {
@@ -517,7 +472,6 @@ export class LanMobileBridge {
       connected: this.mobileBrowserOnline(),
       port: this.port,
       ...(tokenValid && pairingUrl ? { pairingUrl, expiresAt: this.pairingExpiresAt } : {}),
-      desktopUrl: `http://127.0.0.1:${this.port}/desktop`,
       tunnelActive: this.tunnelActive,
       tunnelLoading: this.tunnelLoading,
       tunnelUrl: this.tunnelInstance?.url,
@@ -601,13 +555,7 @@ export class LanMobileBridge {
     return true
   }
 
-  /** Durable-password opt-in for the desktop window: keep the PIN now on show. */
-  setPinConsent(consent: boolean): boolean {
-    if (!consent) return this.setDurablePin(null)
-    return this.setDurablePin(this.readPairingPin().pin ?? this.generatePairingPin())
-  }
-
-  private desktopPinFields(): {
+  private pairingPinFields(): {
     pairingPin?: string
     pinConsent: boolean
     pinExpiresAt?: number
@@ -667,6 +615,7 @@ export class LanMobileBridge {
   }
 
   private revokeMobileSessions(): void {
+    this.closeSessionStreams()
     this.sessions.clear()
     this.suspendedSessions.clear()
     this.resumableSessions.clear()
@@ -675,14 +624,18 @@ export class LanMobileBridge {
     this.syncConnected()
   }
 
-  /**
-   * The desktop Disconnect button's effect, shared with the settings panel: the
-   * phone keeps a resumable session while the token rotates, so the code that
-   * just paired cannot admit another device.
-   */
-  suspendMobileSessions(): void {
+  private closeSessionStreams(): void {
     for (const abort of this.sessionStreamAborts) abort.abort()
     this.sessionStreamAborts.clear()
+  }
+
+  /**
+   * The settings panel's Disconnect action: the phone keeps a resumable session
+   * while the token rotates, so the code that just paired cannot admit another
+   * device.
+   */
+  suspendMobileSessions(): void {
+    this.closeSessionStreams()
     for (const [token, session] of this.sessions) {
       this.suspendedSessions.set(token, session)
       this.resumableSessions.set(token, session)
@@ -695,8 +648,7 @@ export class LanMobileBridge {
   private issueSessionCookie(
     request: IncomingMessage,
     response: ServerResponse,
-    remoteAddress: string,
-    connectionMode: MobileConnectionMode
+    secureTransport: boolean
   ): void {
     const token = randomBytes(32).toString('base64url')
     const existing = this.mobileToken(request)
@@ -706,10 +658,10 @@ export class LanMobileBridge {
       this.suspendedSessions.delete(existing)
       this.resumableSessions.delete(existing)
     }
-    this.sessions.set(token, { token, remoteAddress, pairedAt: this.now() })
+    this.sessions.set(token, { pairedAt: this.now() })
     this.pairingToken = undefined
     this.pairingExpiresAt = undefined
-    const secure = connectionMode === 'tunnel' ? '; Secure' : ''
+    const secure = secureTransport ? '; Secure' : ''
     response.setHeader(
       'set-cookie',
       `dsh_mobile=${token}; HttpOnly; SameSite=Strict; Path=/${secure}; Max-Age=2592000`
@@ -727,11 +679,6 @@ export class LanMobileBridge {
     }
   }
 
-  private clearTunnelDeathFlags(): void {
-    this.unexpectedlyClosed = false
-    this.lastTunnelProvider = undefined
-  }
-
   private armTunnelProcess(instance: InternetTunnelInstance | undefined): void {
     if (!instance) return
     this.tunnelExpiresAt =
@@ -744,8 +691,8 @@ export class LanMobileBridge {
   }
 
   private handleUnexpectedTunnelClose(instance: InternetTunnelInstance): void {
-    this.lastTunnelProvider = instance.provider
-    this.unexpectedlyClosed = true
+    if (this.tunnelInstance !== instance) return
+    this.closeSessionStreams()
     this.tunnelActive = false
     this.tunnelLoading = false
     this.tunnelExpiresAt = undefined
@@ -754,33 +701,15 @@ export class LanMobileBridge {
     this.syncConnected()
   }
 
-  private desktopTunnelPayload(snapshot: LanMobileBridgeSnapshot, qrSvg?: string): Record<string, unknown> {
-    return {
-      active: snapshot.tunnelActive,
-      loading: snapshot.tunnelLoading,
-      url: snapshot.tunnelUrl,
-      provider: snapshot.tunnelProvider ?? this.lastTunnelProvider,
-      error: snapshot.tunnelError,
-      pairingUrl: snapshot.pairingUrl,
-      qrSvg,
-      expiresAt: snapshot.expiresAt,
-      unexpectedlyClosed: this.unexpectedlyClosed,
-      tunnelExpiresAt: this.tunnelExpiresAt,
-      ...this.desktopPinFields()
-    }
-  }
-
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     response.setHeader('cache-control', 'no-store')
     response.setHeader('x-content-type-options', 'nosniff')
     response.setHeader('referrer-policy', 'no-referrer')
-    const frameAncestors = this.frameAncestors()
     response.setHeader(
       'content-security-policy',
-      "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" +
-        (frameAncestors ? `; frame-ancestors ${frameAncestors}` : '')
+      "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
     )
-    if (!frameAncestors) response.setHeader('x-frame-options', 'DENY')
+    response.setHeader('x-frame-options', 'DENY')
 
     const transportAddress = normalizeRemoteAddress(request.socket.remoteAddress ?? '')
     if (!isPrivateAddress(transportAddress)) return this.text(response, 403, 'Private network only.')
@@ -799,47 +728,6 @@ export class LanMobileBridge {
       return this.serveAcmeChallenge(url.pathname, response)
     }
 
-    // AI-HUB 的配对端点。公网入口和局域网入口是同一台宿主的同一件事，交给移动 API 的
-    // 配对路由；落到下面的浏览器配对闸门只会拿到 401 文本。
-    if (request.method === 'POST' && AI_HUB_PAIR_PATHS.has(url.pathname)) {
-      response.removeHeader('content-security-policy')
-      response.removeHeader('x-frame-options')
-      if (!this.options.mobileApi) {
-        return this.json(response, 503, {
-          ok: false,
-          error: 'AI-HUB mobile API is unavailable.'
-        })
-      }
-      const handled = await this.options.mobileApi.handle(
-        request,
-        response,
-        `${MOBILE_API_V1_PREFIX}/pair`
-      )
-      if (!handled) {
-        this.json(response, 503, { ok: false, error: 'AI-HUB mobile API is unavailable.' })
-      }
-      return
-    }
-
-    // AI-HUB speaks its own protocol with a device credential. It reaches the
-    // embedded mobile API through the same public entry as the browser page,
-    // but does not use the browser pairing gate.
-    if (isMobileApiPath(url.pathname)) {
-      response.removeHeader('content-security-policy')
-      response.removeHeader('x-frame-options')
-      if (!this.options.mobileApi) {
-        return this.json(response, 503, {
-          ok: false,
-          error: 'AI-HUB mobile API is unavailable.'
-        })
-      }
-      const handled = await this.options.mobileApi.handle(request, response, url.pathname)
-      if (!handled) {
-        this.json(response, 503, { ok: false, error: 'AI-HUB mobile API is unavailable.' })
-      }
-      return
-    }
-
     if (request.method === 'GET' && url.pathname.startsWith('/brand-logo/')) {
       const variant = url.pathname === '/brand-logo/dark' ? 'dark' : 'light'
       const path = this.options.brandLogoPaths?.[variant]
@@ -854,209 +742,6 @@ export class LanMobileBridge {
         this.text(response, 404, 'Brand asset not found.')
       }
       return
-    }
-
-    if (request.method === 'GET' && url.pathname === '/app-icon') {
-      const path = this.options.appIconPath
-      if (!path) return this.text(response, 404, 'App icon not found.')
-      try {
-        const body = await readFile(path)
-        response.statusCode = 200
-        response.setHeader('content-type', 'image/png')
-        response.setHeader('cache-control', 'public, max-age=86400')
-        response.end(body)
-      } catch {
-        this.text(response, 404, 'App icon not found.')
-      }
-      return
-    }
-
-    if (request.method === 'GET' && url.pathname === '/desktop') {
-      if (url.searchParams.has('k')) {
-        if (isLoopbackAddress(transportAddress) && this.hasDesktopSession(request)) {
-          response.statusCode = 303
-          response.setHeader('location', '/desktop')
-          response.end()
-          return
-        }
-        this.consumeDesktopBootstrap(url.searchParams.get('k'), transportAddress, response)
-        return
-      }
-      if (this.rejectUnlessDesktop(request, transportAddress, response)) return
-      this.verifyTrustedOrigin(request)
-      if (!this.server || !this.port) return this.text(response, 503, 'Bridge unavailable.')
-      // The token is consumed once a phone pairs, and expires after five
-      // minutes. The desktop window stays open across both: rotate so it
-      // keeps showing a scannable code instead of a dead one (or a 503).
-      if (!this.pairingTokenValid()) {
-        this.rotatePairingToken()
-      }
-      const snapshot = this.snapshot()
-      const connected = this.mobileBrowserOnline()
-      if (!snapshot.pairingUrl && !connected) return this.text(response, 503, 'Bridge unavailable.')
-      const qrSvg = snapshot.pairingUrl
-        ? await QRCode.toString(snapshot.pairingUrl, { type: 'svg', margin: 1, width: 260 })
-        : ''
-      const pin = this.desktopPinFields()
-      return this.html(
-        response,
-        renderDesktopPairingPage({
-          qrSvg,
-          pairingUrl: snapshot.pairingUrl ?? '',
-          expiresAt: snapshot.expiresAt ?? this.now(),
-          locale: this.locale(),
-          connected,
-          tunnelActive: snapshot.tunnelActive,
-          tunnelLoading: snapshot.tunnelLoading,
-          tunnelProvider: snapshot.tunnelProvider ?? this.lastTunnelProvider,
-          tunnelUrl: snapshot.tunnelUrl,
-          tunnelError: snapshot.tunnelError,
-          unexpectedlyClosed: this.unexpectedlyClosed,
-          pairingPin: pin.pairingPin,
-          pinConsent: pin.pinConsent,
-          pinExpiresAt: pin.pinExpiresAt,
-          tunnelExpiresAt: this.tunnelExpiresAt,
-          fixedPublicUrl: this.options.publicUrl?.()
-        })
-      )
-    }
-
-    if (request.method === 'GET' && url.pathname === '/desktop/status') {
-      if (this.rejectUnlessDesktop(request, transportAddress, response)) return
-      return this.json(response, 200, { connected: this.mobileBrowserOnline() })
-    }
-
-    if (request.method === 'GET' && url.pathname === '/desktop/tunnel/status') {
-      if (this.rejectUnlessDesktop(request, transportAddress, response)) return
-      const snapshot = this.snapshot()
-      const qrSvg = snapshot.pairingUrl
-        ? await QRCode.toString(snapshot.pairingUrl, { type: 'svg', margin: 1, width: 260 })
-        : undefined
-      return this.json(response, 200, this.desktopTunnelPayload(snapshot, qrSvg))
-    }
-
-    if (request.method === 'POST' && url.pathname === '/desktop/tunnel/fallback') {
-      if (this.rejectUnlessDesktop(request, transportAddress, response)) return
-      this.verifySameOrigin(request)
-      if (this.mobileBrowserOnline()) {
-        return this.json(response, 409, {
-          ok: false,
-          error: 'Disconnect the phone before switching connection modes.'
-        })
-      }
-      if (this.tunnelLoading || this.tunnelLaunch) {
-        return this.json(response, 409, {
-          ok: false,
-          error: 'A tunnel switch is already in progress.'
-        })
-      }
-      if (!this.tunnelActive || this.tunnelInstance?.provider !== 'cloudflare') {
-        return this.json(response, 400, {
-          ok: false,
-          error: 'Fallback is only available for an active Cloudflare tunnel.'
-        })
-      }
-      const snapshot = await this.fallbackToPinggy()
-      const qrSvg = snapshot.pairingUrl
-        ? await QRCode.toString(snapshot.pairingUrl, { type: 'svg', margin: 1, width: 260 })
-        : undefined
-      return this.json(response, 200, {
-        ok: !snapshot.tunnelError,
-        ...this.desktopTunnelPayload(snapshot, qrSvg)
-      })
-    }
-
-    if (request.method === 'POST' && url.pathname === '/desktop/pin/consent') {
-      if (this.rejectUnlessDesktop(request, transportAddress, response)) return
-      this.verifySameOrigin(request)
-      let consent = false
-      try {
-        const parsed = JSON.parse(await readBody(request)) as { consent?: unknown }
-        consent = parsed.consent === true
-      } catch {
-        return this.json(response, 400, { ok: false, error: 'Invalid consent payload.' })
-      }
-      if (!this.setPinConsent(consent)) {
-        return this.json(response, 500, { ok: false, error: 'Unable to save the pairing password.' })
-      }
-      const snapshot = this.snapshot()
-      const qrSvg = snapshot.pairingUrl
-        ? await QRCode.toString(snapshot.pairingUrl, { type: 'svg', margin: 1, width: 260 })
-        : undefined
-      return this.json(response, 200, {
-        ok: true,
-        ...this.desktopTunnelPayload(snapshot, qrSvg)
-      })
-    }
-
-    if (request.method === 'POST' && url.pathname === '/desktop/pin/reset') {
-      if (this.rejectUnlessDesktop(request, transportAddress, response)) return
-      this.verifySameOrigin(request)
-      if (this.storedPinState().pinConsent !== true) {
-        return this.json(response, 400, { ok: false, error: 'A durable pairing password is not enabled.' })
-      }
-      if (!this.setDurablePin(this.generatePairingPin())) {
-        return this.json(response, 500, { ok: false, error: 'Unable to save the pairing password.' })
-      }
-      const snapshot = this.snapshot()
-      const qrSvg = snapshot.pairingUrl
-        ? await QRCode.toString(snapshot.pairingUrl, { type: 'svg', margin: 1, width: 260 })
-        : undefined
-      return this.json(response, 200, {
-        ok: true,
-        ...this.desktopTunnelPayload(snapshot, qrSvg)
-      })
-    }
-
-    if (request.method === 'POST' && url.pathname === '/desktop/tunnel/toggle') {
-      if (this.rejectUnlessDesktop(request, transportAddress, response)) return
-      this.verifySameOrigin(request)
-      if (this.mobileBrowserOnline()) {
-        return this.json(response, 409, {
-          ok: false,
-          error: 'Disconnect the phone before switching connection modes.'
-        })
-      }
-      let enable: boolean | undefined
-      try {
-        const bodyText = await readBody(request)
-        if (bodyText) {
-          const parsed = JSON.parse(bodyText) as { enable?: unknown }
-          if (typeof parsed.enable === 'boolean') enable = parsed.enable
-        }
-      } catch {}
-      // Report an in-progress switch honestly instead of answering with the
-      // current (stale) snapshot the desktop UI cannot render.
-      if (enable === true && this.tunnelLoading && !this.tunnelActive) {
-        return this.json(response, 409, {
-          ok: false,
-          error: 'A tunnel switch is already in progress.'
-        })
-      }
-      let snapshot: LanMobileBridgeSnapshot
-      try {
-        snapshot = await this.toggleTunnel(enable)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        if (message.includes('Disconnect the phone')) {
-          return this.json(response, 409, { ok: false, error: message })
-        }
-        throw error
-      }
-      const qrSvg = snapshot.pairingUrl
-        ? await QRCode.toString(snapshot.pairingUrl, { type: 'svg', margin: 1, width: 260 })
-        : undefined
-      return this.json(response, 200, {
-        ok: !snapshot.tunnelError,
-        ...this.desktopTunnelPayload(snapshot, qrSvg)
-      })
-    }
-
-    if (request.method === 'POST' && url.pathname === '/desktop/disconnect') {
-      if (this.rejectUnlessDesktop(request, transportAddress, response)) return
-      this.verifySameOrigin(request)
-      this.suspendMobileSessions()
-      return this.json(response, 200, { ok: true })
     }
 
     if (request.method === 'GET' && url.pathname === '/disconnected') {
@@ -1099,8 +784,6 @@ export class LanMobileBridge {
     }
 
     if (request.method === 'GET' && url.pathname === '/pair') {
-      const migrationUrl = this.tunnelMigrationUrl(url, connectionMode)
-      if (migrationUrl) return this.redirect(response, migrationUrl)
       if (this.authorized(request)) {
         response.statusCode = 302
         response.setHeader('location', '/')
@@ -1111,7 +794,11 @@ export class LanMobileBridge {
         return this.text(response, 401, 'This pairing link is invalid or expired.')
       }
       if (connectionMode === 'lan') {
-        this.issueSessionCookie(request, response, remoteAddress, 'lan')
+        this.issueSessionCookie(
+          request,
+          response,
+          this.requestIsSecure(request, connectionMode)
+        )
         response.statusCode = 302
         response.setHeader('location', '/')
         response.end()
@@ -1151,7 +838,11 @@ export class LanMobileBridge {
         return this.json(response, 401, { ok: false, error: 'Invalid pairing password.' })
       }
       this.clearPinFailures()
-      this.issueSessionCookie(request, response, remoteAddress, 'tunnel')
+      this.issueSessionCookie(
+        request,
+        response,
+        this.requestIsSecure(request, connectionMode)
+      )
       return this.json(response, 200, { ok: true })
     }
 
@@ -1222,13 +913,6 @@ export class LanMobileBridge {
     this.text(response, 404, 'Not found.')
   }
 
-  private frameAncestors(): string | undefined {
-    const configured = this.options.frameAncestors
-    const raw = typeof configured === 'function' ? configured() : configured
-    if (typeof raw !== 'string') return undefined
-    return /^https?:\/\/[A-Za-z0-9.:[\]-]+$/.test(raw) ? raw : undefined
-  }
-
   private locale(): 'en' | 'zh' {
     const value = this.options.locale
     return typeof value === 'function' ? value() : value ?? 'en'
@@ -1259,7 +943,7 @@ export class LanMobileBridge {
     return this.cookieValue(request, 'dsh_mobile')
   }
 
-  /** Restores one session the desktop disconnect suspended. */
+  /** Restores one session the settings panel's disconnect suspended. */
   private resumeSuspendedMobileSession(request: IncomingMessage): boolean {
     const token = this.mobileToken(request)
     if (!token) return false
@@ -1292,47 +976,6 @@ export class LanMobileBridge {
     return this.now() - session.pairedAt < MOBILE_SESSION_TTL_MS
   }
 
-  private rejectUnlessDesktop(
-    request: IncomingMessage,
-    transportAddress: string,
-    response: ServerResponse
-  ): boolean {
-    if (isLoopbackAddress(transportAddress) && this.hasDesktopSession(request)) return false
-    this.text(response, 403, 'Desktop only.')
-    return true
-  }
-
-  private consumeDesktopBootstrap(
-    candidate: string | null,
-    transportAddress: string,
-    response: ServerResponse
-  ): boolean {
-    const expected = this.desktopBootstrapToken
-    if (
-      !isLoopbackAddress(transportAddress) ||
-      !candidate ||
-      !expected ||
-      !this.pinsEqual(candidate, expected)
-    ) {
-      this.text(response, 403, 'Desktop only.')
-      return false
-    }
-    this.desktopBootstrapToken = undefined
-    response.setHeader(
-      'set-cookie',
-      `dsh_desktop=${this.desktopSessionToken}; HttpOnly; SameSite=Strict; Path=/`
-    )
-    response.statusCode = 303
-    response.setHeader('location', '/desktop')
-    response.end()
-    return true
-  }
-
-  private hasDesktopSession(request: IncomingMessage): boolean {
-    const token = this.cookieValue(request, 'dsh_desktop')
-    return Boolean(token && this.pinsEqual(token, this.desktopSessionToken))
-  }
-
   private cookieValue(request: IncomingMessage, name: string): string | undefined {
     const cookie = request.headers.cookie ?? ''
     return new RegExp(`(?:^|;\\s*)${name}=([^;]+)`).exec(cookie)?.[1]
@@ -1343,10 +986,9 @@ export class LanMobileBridge {
   }
 
   /**
-   * Rejects browser-driven cross-site requests (CSRF / drive-by) against the
-   * loopback-only desktop surface. The pairing window's own navigations and
-   * same-origin fetches pass; requests without Fetch Metadata and Origin
-   * headers (local tooling, tests) pass as well.
+   * Rejects browser-driven cross-site requests against the mobile surface. The
+   * pairing window and same-origin fetches pass; requests without Fetch
+   * Metadata and Origin headers (local tooling, tests) pass as well.
    */
   private verifyTrustedOrigin(request: IncomingMessage): void {
     const site = firstHeaderValue(request.headers['sec-fetch-site'])
@@ -1367,16 +1009,42 @@ export class LanMobileBridge {
    */
   private requestConnectionMode(request: IncomingMessage): MobileConnectionMode {
     const host = requestHostname(request.headers.host)
-    const forwardingHeaders = [
-      'forwarded',
-      'x-forwarded-for',
-      'x-real-ip',
-      'cf-connecting-ip',
-      'cf-ray'
-    ]
-    if (forwardingHeaders.some((name) => request.headers[name] !== undefined)) return 'tunnel'
+    const forwarded = Object.keys(request.headers).some(
+      (name) =>
+        name === 'forwarded' ||
+        name === 'x-real-ip' ||
+        name.startsWith('x-forwarded-') ||
+        name.startsWith('cf-')
+    )
+    if (forwarded) return 'tunnel'
     if (this.options.publicUrl?.()) return 'tunnel'
     return isInternetTunnelHost(host) ? 'tunnel' : 'lan'
+  }
+
+  /** Secure cookies require an HTTPS transport, not merely a public-entry decision. */
+  private requestIsSecure(
+    request: IncomingMessage,
+    connectionMode: MobileConnectionMode
+  ): boolean {
+    if ((request.socket as { encrypted?: boolean }).encrypted) return true
+    if (firstHeaderValue(request.headers['cf-ray']) || firstHeaderValue(request.headers['cf-connecting-ip'])) {
+      return true
+    }
+    const forwardedProto = firstHeaderValue(request.headers['x-forwarded-proto'])
+      ?.split(',')[0]
+      ?.trim()
+      .toLowerCase()
+    if (forwardedProto) return forwardedProto === 'https'
+    const forwardedHost = firstHeaderValue(request.headers['x-forwarded-host'])
+      ?.split(',')[0]
+      ?.trim()
+      .toLowerCase()
+    if (forwardedHost) {
+      return !isPrivateAddress(requestHostname(forwardedHost)) && forwardedHost !== 'localhost'
+    }
+    if (connectionMode !== 'tunnel') return false
+    const host = requestHostname(request.headers.host).toLowerCase()
+    return !isPrivateAddress(host) && host !== 'localhost' && !host.endsWith('.local')
   }
 
   private tunnelMigrationUrl(url: URL, connectionMode: MobileConnectionMode): string | undefined {
@@ -1535,10 +1203,10 @@ export class LanMobileBridge {
    * Reconciles everything that depends on a phone being attached. The mux
    * downlink exists purely to track questions raised for a mobile client, so
    * running it with no client meant reconnecting twice a second, forever, on
-   * every desktop that never used the feature.
+   * every installation that never used the feature.
    */
   private syncConnected(): void {
-    const connected = this.sessions.size > 0
+    const connected = this.mobileBrowserOnline()
     if (connected) this.startMuxMonitor()
     else this.muxAbort?.abort()
     if (connected === this.lastConnected) return
@@ -1700,6 +1368,14 @@ export class LanMobileBridge {
     const streamId = `mobile-session-${randomUUID()}`
     const abort = new AbortController()
     this.sessionStreamAborts.add(abort)
+    const token = this.mobileToken(request)
+    const authTimer = setInterval(() => {
+      const session = token ? this.sessions.get(token) : undefined
+      if (session && this.sessionUsable(session)) return
+      abort.abort()
+      if (!response.writableEnded) response.end()
+    }, 15_000)
+    authTimer.unref?.()
 
     response.statusCode = 200
     response.setHeader('content-type', 'text/event-stream; charset=utf-8')
@@ -1720,6 +1396,7 @@ export class LanMobileBridge {
       socket.addEventListener('error', () => {})
       let settled = false
       const cleanup = (): void => {
+        clearInterval(authTimer)
         request.removeListener('close', finish)
         abort.signal.removeEventListener('abort', finish)
         socket.removeEventListener('open', handleOpen)

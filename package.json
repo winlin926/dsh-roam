@@ -1,6 +1,6 @@
 {
   "name": "dsh-roam",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "把电脑上的 DeepSeek Harness 会话漫游到手机：浏览器扫码即用，AI-HUB App 共用同一地址和配对码。",
   "license": "MIT",
   "repository": {

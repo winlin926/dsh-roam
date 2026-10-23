@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import net, { type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -165,7 +165,7 @@ async function startHarness(config: PluginConfig = {}) {
   })
   servers.push(server)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-  return { routes, port: (server.address() as AddressInfo).port }
+  return { routes, port: (server.address() as AddressInfo).port, directory }
 }
 
 async function tempSettingsFile(): Promise<string> {
@@ -260,6 +260,28 @@ describe('fixed public URL validation', () => {
 })
 
 describe('phone bridge fixed public URL routes', () => {
+  it('removes a paired device from the ledger without crashing the route', async () => {
+    const settingsFile = await tempSettingsFile()
+    const { port, directory } = await startHarness({ settingsFile })
+    const deviceFile = join(directory, 'dsh-roam', 'mobile-devices.json')
+    await mkdir(join(directory, 'dsh-roam'), { recursive: true })
+    await writeFile(deviceFile, JSON.stringify([{
+      deviceId: 'device-1',
+      name: 'Test phone',
+      platform: 'android',
+      firstSeenAt: Date.now() - 1000,
+      lastSeenAt: Date.now()
+    }]))
+    const before = await getJson(port, '/phone-bridge/state')
+    expect((before.body.devices as unknown[]).length).toBe(1)
+
+    const removed = await postJson(port, '/phone-bridge/devices/remove', { deviceId: 'device-1' })
+    expect(removed.status).toBe(200)
+    expect(removed.body.ok).toBe(true)
+    expect((removed.body.devices as unknown[]).length).toBe(0)
+    expect(JSON.parse(await readFile(deviceFile, 'utf8'))).toEqual([])
+  })
+
   it('rejects a rebinding Host header on the settings routes', async () => {
     const settingsFile = await tempSettingsFile()
     const { port } = await startHarness({ settingsFile })

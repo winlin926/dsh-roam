@@ -35,7 +35,7 @@ dsh-roam 把这两条路合并成一个官方 DSH 插件：
 1. 安装插件（npm 发布后）：
 
    ```bash
-   dsh plugin --profile web add dsh-roam@0.2.1
+   dsh plugin --profile web add dsh-roam@0.2.2
    ```
 
    本地开发时也可以在 profile 里用 `link:` 指向仓库目录，改完代码执行 `pnpm build` 后重载插件。

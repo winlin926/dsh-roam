@@ -545,7 +545,6 @@ function registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, revokeDevi
       return writeJson(response, 400, result(false, '请提供要移除的设备。', await state()))
     }
     revokeDevice(deviceId)
-    mobileDevices.forget(deviceId)
     writeJson(response, 200, result(true, null, await state()))
   })
 }
@@ -654,7 +653,11 @@ export function apply(ctx, config = {}) {
     return () => disposeRoute()
   }, 'dsh-roam desktop url')
 
-  registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, (deviceId) => mobileApiHolder.current?.revokeDevice(deviceId) ?? 0)
+  registerSettingsRoutes(ctx, bridge, runtime, checkPublicUrl, (deviceId) => {
+    const revoked = mobileApiHolder.current?.revokeDevice(deviceId) ?? 0
+    mobileDevices.forget(deviceId)
+    return revoked
+  })
 
   registerLoopbackRoute(ctx, 'certificate', 'POST', CERTIFICATE_PATH, async (request, response) => {
     if (!publicDomain(runtime.publicUrl)) {

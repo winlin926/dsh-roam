@@ -155,6 +155,8 @@ interface MobileSession {
   remoteAddress: string
   /** When the browser first paired; absolute expiry and the IP fallback window use it. */
   pairedAt: number
+  /** Last request carrying this session cookie; drives the "browser connected" view. */
+  lastSeenAt?: number
 }
 
 type MobileConnectionMode = 'lan' | 'tunnel'
@@ -504,7 +506,7 @@ export class LanMobileBridge {
 
   snapshot(): LanMobileBridgeSnapshot {
     if (!this.server || !this.port) {
-      return { running: false, connected: this.sessions.size > 0 }
+      return { running: false, connected: this.mobileBrowserOnline() }
     }
     // The pairing token is single-use (consumed on approval) and short-lived.
     // Tunnel and listener state must stay visible regardless, otherwise the
@@ -513,7 +515,7 @@ export class LanMobileBridge {
     const pairingUrl = this.pairingUrls()[0]
     return {
       running: true,
-      connected: this.sessions.size > 0,
+      connected: this.mobileBrowserOnline(),
       port: this.port,
       ...(tokenValid && pairingUrl ? { pairingUrl, expiresAt: this.pairingExpiresAt } : {}),
       desktopUrl: `http://127.0.0.1:${this.port}/desktop`,
@@ -1251,7 +1253,10 @@ export class LanMobileBridge {
     const token = this.mobileToken(request)
     if (token) {
       const session = this.sessions.get(token)
-      if (session && this.sessionUsable(session)) return true
+      if (session && this.sessionUsable(session)) {
+        session.lastSeenAt = this.now()
+        return true
+      }
       if (session) this.sessions.delete(token)
     }
     // 固定公网域名一旦配置，回环来源就不再等于“本机人”：frpc 也把公网请求送进 127.0.0.1。
@@ -1282,6 +1287,7 @@ export class LanMobileBridge {
     if (!session || !this.sessionUsable(session)) return false
     this.resumableSessions.delete(token)
     this.suspendedSessions.delete(token)
+    session.lastSeenAt = this.now()
     this.sessions.set(token, session)
     return true
   }
@@ -1289,7 +1295,17 @@ export class LanMobileBridge {
   private mobileSessionActive(request: IncomingMessage): boolean {
     const token = this.mobileToken(request)
     const session = token ? this.sessions.get(token) : undefined
-    return Boolean(session && this.sessionUsable(session))
+    if (!session || !this.sessionUsable(session)) return false
+    session.lastSeenAt = this.now()
+    return true
+  }
+
+  /** A paired browser counts as connected only while it is actually making requests. */
+  private mobileBrowserOnline(): boolean {
+    const now = this.now()
+    return [...this.sessions.values()].some(
+      (session) => this.sessionUsable(session) && now - (session.lastSeenAt ?? session.pairedAt) < 30_000
+    )
   }
 
   private sessionUsable(session: MobileSession): boolean {

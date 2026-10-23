@@ -1421,6 +1421,13 @@ describe('pairing token boundary and desktop origin hardening', () => {
 
     const withCookie = await fetch(`http://127.0.0.1:${snapshot.port}/api/status`, { headers: { cookie } })
     expect(withCookie.status).toBe(200)
+    expect(bridge.snapshot().connected).toBe(true)
+
+    now += 31_000
+    expect(bridge.snapshot().connected).toBe(false)
+    const revived = await fetch(`http://127.0.0.1:${snapshot.port}/api/status`, { headers: { cookie } })
+    expect(revived.status).toBe(200)
+    expect(bridge.snapshot().connected).toBe(true)
 
     now += 11 * 60 * 1000
     const withoutCookie = await fetch(`http://127.0.0.1:${snapshot.port}/api/status`)

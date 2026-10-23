@@ -3,12 +3,24 @@
   "version": "0.2.1",
   "description": "把电脑上的 DeepSeek Harness 会话漫游到手机：浏览器扫码即用，AI-HUB App 共用同一地址和配对码。",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/winlin926/dsh-roam.git"
+  },
+  "homepage": "https://github.com/winlin926/dsh-roam#readme",
+  "bugs": {
+    "url": "https://github.com/winlin926/dsh-roam/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "author": {
     "name": "winlin926",
     "email": "l1240235604@163.com"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "type": "module",
   "main": "lib/index.js",
@@ -19,6 +31,7 @@
   },
   "keywords": [
     "dsh-plugin",
+    "dsh-bundle",
     "dsh",
     "deepseek-harness",
     "roam",
@@ -39,13 +52,15 @@
     "cordis.patch.yml",
     "LICENSE",
     "README.md",
+    "CHANGELOG.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
     "build": "pnpm clean && tsc -p tsconfig.json && node scripts/copy-browser-client.mjs",
     "test": "pnpm build && vitest run",
-    "prepack": "pnpm build"
+    "prepack": "pnpm build",
+    "prepublishOnly": "pnpm test"
   },
   "dependencies": {
     "acme-client": "5.4.0",

@@ -1407,6 +1407,32 @@ describe('pairing token boundary and desktop origin hardening', () => {
     expect(rotated.pairingUrl).toBe(tokenBefore)
   })
 
+  it('expires browser sessions and closes the cookie-less handoff window', async () => {
+    let now = Date.now()
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => 'http://127.0.0.1:9999',
+      now: () => now
+    })
+    bridges.push(bridge)
+    const snapshot = await bridge.start()
+    const token = new URL(snapshot.pairingUrl!).searchParams.get('token')
+    const paired = await fetch(`http://127.0.0.1:${snapshot.port}/pair?token=${token}`, { redirect: 'manual' })
+    const cookie = paired.headers.get('set-cookie')!.split(';', 1)[0]!
+
+    const withCookie = await fetch(`http://127.0.0.1:${snapshot.port}/api/status`, { headers: { cookie } })
+    expect(withCookie.status).toBe(200)
+
+    now += 11 * 60 * 1000
+    const withoutCookie = await fetch(`http://127.0.0.1:${snapshot.port}/api/status`)
+    expect(withoutCookie.status).toBe(401)
+    const stillValid = await fetch(`http://127.0.0.1:${snapshot.port}/api/status`, { headers: { cookie } })
+    expect(stillValid.status).toBe(200)
+
+    now += 30 * 24 * 60 * 60 * 1000
+    const expired = await fetch(`http://127.0.0.1:${snapshot.port}/api/status`, { headers: { cookie } })
+    expect(expired.status).toBe(401)
+  })
+
   it('rejects cross-site browser requests to desktop endpoints', async () => {
     const bridge = new LanMobileBridge({
       harnessUrl: () => 'http://127.0.0.1:9999'

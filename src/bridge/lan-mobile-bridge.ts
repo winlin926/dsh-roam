@@ -30,6 +30,8 @@ import { isMobileApiPath, MOBILE_API_V1_PREFIX, type MobileApiHost } from './mob
 const MAX_BODY_BYTES = 64 * 1024
 const PAIRING_TTL_MS = 5 * 60 * 1000
 const PIN_TTL_MS = PAIRING_TTL_MS
+const MOBILE_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
+const MOBILE_IP_FALLBACK_MS = 10 * 60 * 1000
 const PIN_FAIL_WINDOW_MS = 10 * 60 * 1000
 const PIN_FAIL_PER_IP = 5
 const PIN_FAIL_GLOBAL = 20
@@ -151,6 +153,8 @@ export interface LanMobileBridgeSnapshot {
 interface MobileSession {
   token: string
   remoteAddress: string
+  /** When the browser first paired; absolute expiry and the IP fallback window use it. */
+  pairedAt: number
 }
 
 type MobileConnectionMode = 'lan' | 'tunnel'
@@ -710,7 +714,7 @@ export class LanMobileBridge {
         this.resumableSessions.delete(savedToken)
       }
     }
-    this.sessions.set(token, { token, remoteAddress })
+    this.sessions.set(token, { token, remoteAddress, pairedAt: this.now() })
     this.pairingToken = undefined
     this.pairingExpiresAt = undefined
     const secure = connectionMode === 'tunnel' ? '; Secure' : ''
@@ -1245,11 +1249,21 @@ export class LanMobileBridge {
     connectionMode: MobileConnectionMode
   ): boolean {
     const token = this.mobileToken(request)
-    if (token && this.sessions.has(token)) return true
+    if (token) {
+      const session = this.sessions.get(token)
+      if (session && this.sessionUsable(session)) return true
+      if (session) this.sessions.delete(token)
+    }
     // 固定公网域名一旦配置，回环来源就不再等于“本机人”：frpc 也把公网请求送进 127.0.0.1。
     // 这时只认设备 cookie，避免整台公网入口被一个 127.0.0.1 会话代表。
     if (connectionMode === 'tunnel' || Boolean(this.options.publicUrl?.())) return false
-    return [...this.sessions.values()].some((session) => session.remoteAddress === remoteAddress)
+    // iOS 主屏应用首次启动时可能还没有共享 Cookie；只在这段短暂交接窗口内按来源 IP 放行。
+    return [...this.sessions.values()].some(
+      (session) =>
+        session.remoteAddress === remoteAddress &&
+        this.sessionUsable(session) &&
+        this.now() - session.pairedAt < MOBILE_IP_FALLBACK_MS
+    )
   }
 
   private mobileToken(request: IncomingMessage): string | undefined {
@@ -1265,7 +1279,7 @@ export class LanMobileBridge {
     const token = this.mobileToken(request)
     if (!token) return false
     const session = this.resumableSessions.get(token)
-    if (!session) return false
+    if (!session || !this.sessionUsable(session)) return false
     this.resumableSessions.delete(token)
     this.suspendedSessions.delete(token)
     this.sessions.set(token, session)
@@ -1274,7 +1288,12 @@ export class LanMobileBridge {
 
   private mobileSessionActive(request: IncomingMessage): boolean {
     const token = this.mobileToken(request)
-    return Boolean(token && this.sessions.has(token))
+    const session = token ? this.sessions.get(token) : undefined
+    return Boolean(session && this.sessionUsable(session))
+  }
+
+  private sessionUsable(session: MobileSession): boolean {
+    return this.now() - session.pairedAt < MOBILE_SESSION_TTL_MS
   }
 
   private rememberMobileContext(
@@ -1289,7 +1308,7 @@ export class LanMobileBridge {
       (session) => session.remoteAddress === remoteAddress
     )
     if (sameDeviceIsActive) {
-      this.sessions.set(token, { token, remoteAddress })
+      this.sessions.set(token, { token, remoteAddress, pairedAt: this.now() })
       this.suspendedSessions.delete(token)
       this.resumableSessions.delete(token)
       return
@@ -1298,7 +1317,7 @@ export class LanMobileBridge {
       const oldest = this.suspendedSessions.keys().next().value
       if (oldest) this.suspendedSessions.delete(oldest)
     }
-    this.suspendedSessions.set(token, { token, remoteAddress })
+    this.suspendedSessions.set(token, { token, remoteAddress, pairedAt: this.now() })
   }
 
   private rejectUnlessDesktop(

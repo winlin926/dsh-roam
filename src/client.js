@@ -204,6 +204,9 @@ window.__ModuleLoader__.load({
       certificate: null,
       aihubQrSvg: null,
       aihubLanUrls: [],
+      aihubPairingExpiresAt: null,
+      aihubAvailable: null,
+      aihubError: null,
       version: null,
       now: null,
     }
@@ -440,6 +443,11 @@ window.__ModuleLoader__.load({
         const publicAvailable = publicUrlConfigured || tunnelUrl.length > 0
         const qrSvg = typeof state.qrSvg === 'string' ? state.qrSvg : ''
         const aihubQrSvg = typeof state.aihubQrSvg === 'string' && state.aihubQrSvg.length > 0 ? state.aihubQrSvg : ''
+        const aihubPairingExpiresAt =
+          typeof state.aihubPairingExpiresAt === 'number' && Number.isFinite(state.aihubPairingExpiresAt)
+            ? state.aihubPairingExpiresAt
+            : null
+        const aihubAvailable = state.aihubAvailable !== false
         const accessUrl = publicUrl || tunnelUrl || pairingUrl || lanUrls[0] || ''
         const accessLabel = publicUrlConfigured ? '固定公网地址' : tunnelUrl ? '临时隧道地址' : '局域网地址'
         const pin = state.pairingPin ? String(state.pairingPin) : ''
@@ -621,27 +629,34 @@ window.__ModuleLoader__.load({
             : null,
         )
 
-        const qrFrame = (svg, locked) =>
-          locked
+        const qrFrame = (svg, locked, unavailable) =>
+          unavailable
             ? h(
                 'div',
                 { className: 'dshp_qr dshp_qrLocked' },
-                h('strong', null, '需要固定密码'),
-                h('span', null, '先在下方设置 6 位数字'),
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'dshp_button',
-                    'data-action': 'edit-pin',
-                    onClick: () => setPinEditing(true),
-                  },
-                  '设置密码',
-                ),
+                h('strong', null, 'AI-HUB 不可用'),
+                h('span', null, state.aihubError ? String(state.aihubError) : '移动 API 未就绪'),
               )
-            : svg
-              ? h('div', { className: 'dshp_qr', dangerouslySetInnerHTML: { __html: svg } })
-              : h('div', { className: 'dshp_qr dshp_qrLocked' }, h('span', null, '二维码生成中'))
+            : locked
+              ? h(
+                  'div',
+                  { className: 'dshp_qr dshp_qrLocked' },
+                  h('strong', null, '需要固定密码'),
+                  h('span', null, '先在下方设置 6 位数字'),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dshp_button',
+                      'data-action': 'edit-pin',
+                      onClick: () => setPinEditing(true),
+                    },
+                    '设置密码',
+                  ),
+                )
+              : svg
+                ? h('div', { className: 'dshp_qr', dangerouslySetInnerHTML: { __html: svg } })
+                : h('div', { className: 'dshp_qr dshp_qrLocked' }, h('span', null, '二维码生成中'))
 
         const browserBody = h(
           'div',
@@ -744,7 +759,7 @@ window.__ModuleLoader__.load({
         const aihubBody = h(
           'div',
           { className: 'dshp_connectBody', 'data-tab-panel': 'aihub' },
-          qrFrame(aihubQrSvg, !pinFixed),
+          qrFrame(aihubQrSvg, !pinFixed, !aihubAvailable),
           h(
             'div',
             { className: 'dshp_fields' },
@@ -779,10 +794,13 @@ window.__ModuleLoader__.load({
                 )
               : h('p', { className: 'dshp_note' }, '没有可用的局域网地址，请确认电脑已连上 Wi-Fi 或网线。'),
             pinFixed
-              ? h('p', { className: 'dshp_note' }, 'AI-HUB 配对：扫码，或手动填地址（局域网选 http、公网选 https），配对码填上方连接密码。')
+              ? h('p', { className: 'dshp_note' }, '扫码使用一次性配对码；手动填地址时，配对码仍用上方 6 位连接密码。')
               : h('p', { className: 'dshp_note' }, 'AI-HUB 配对只接受固定密码。点「设为固定」保存 6 位数字后，这里的二维码和地址就能用。'),
+            pinFixed && aihubPairingExpiresAt
+              ? h('p', { className: 'dshp_note' }, '二维码配对码' + formatRemaining(aihubPairingExpiresAt, state.now) + '；过期后自动刷新。')
+              : null,
             pinFixed
-              ? h('p', { className: 'dshp_warn' }, '这个二维码包含固定连接密码，请勿截图外发或投屏展示。')
+              ? h('p', { className: 'dshp_note' }, '二维码不包含固定密码；截图过期后无法再配对。')
               : null,
             renderError('connect'),
             renderNotice('connect'),

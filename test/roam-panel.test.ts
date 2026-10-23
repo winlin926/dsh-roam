@@ -119,6 +119,9 @@ function idleState() {
     onlineDeviceCount: null,
     aihubQrSvg: null,
     aihubLanUrls: [],
+    aihubPairingExpiresAt: null,
+    aihubAvailable: true,
+    aihubError: null,
     tunnelActive: false,
     tunnelLoading: false,
     tunnelProvider: null,
@@ -356,11 +359,30 @@ describe('phone bridge settings panel', () => {
     )
     const aihub = selectTab(panel, 'aihub')
     const text = textOf(aihub)
-    expect(text).toContain('AI-HUB 配对')
+    expect(text).toContain('扫码使用一次性配对码')
     expect(text).toContain(AIHUB_PAIRING_URL)
     const qr = elements(aihub).find((element) => element.props.className === 'dshp_qr')
     expect(qr).toBeTruthy()
     expect((qr!.props.dangerouslySetInnerHTML as { __html: string }).__html).toBe(QR_SVG)
+  })
+
+  it('marks the AI-HUB QR as a one-time code that does not contain the fixed PIN', () => {
+    const now = Date.now()
+    const panel = render(
+      statePayload({
+        pinConsent: true,
+        pairingPin: '051109',
+        aihubQrSvg: QR_SVG,
+        aihubLanUrls: [AIHUB_PAIRING_URL],
+        aihubPairingExpiresAt: now + 4 * 60_000,
+        now,
+      }),
+    )
+    const aihub = selectTab(panel, 'aihub')
+    const text = textOf(aihub)
+    expect(text).toContain('二维码配对码约 4 分钟后失效')
+    expect(text).toContain('二维码不包含固定密码')
+    expect(text).toContain('手动填地址时，配对码仍用上方 6 位连接密码')
   })
 
   it('asks for a fixed PIN before generating the AI-HUB QR', () => {

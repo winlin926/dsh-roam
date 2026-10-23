@@ -1,8 +1,9 @@
+import { randomInt } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { hostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { Duplex } from 'node:stream'
+import { PassThrough, type Duplex } from 'node:stream'
 import type { MobileDeviceRegistry } from './mobile-device-registry.js'
 
 export const MOBILE_API_PREFIX = '/api/mobile'
@@ -12,6 +13,8 @@ export const MOBILE_API_V1_PREFIX = '/api/mobile/v1'
  * ignores request headers, because X-Real-IP is caller-controlled. */
 const PAIRING_FAILURE_WINDOW_MS = 10 * 60 * 1000
 const PAIRING_FAILURE_LIMIT = 10
+/** One QR scan may pair once; the code is useless after this window. */
+const AIHUB_PAIRING_TTL_MS = 5 * 60 * 1000
 
 const require = createRequire(import.meta.url)
 
@@ -69,6 +72,11 @@ export interface MobileApiHostOptions {
   log?(message: string): void
 }
 
+export interface PairingCode {
+  code: string
+  expiresAt: number
+}
+
 export interface MobileApiHost {
   readonly available: boolean
   readonly error?: string
@@ -78,12 +86,41 @@ export interface MobileApiHost {
   disconnectDevice(deviceId: string): void
   /** 当前握着事件流长连接的设备；手机断网、退后台都会立刻消失。 */
   onlineDeviceIds(): ReadonlySet<string>
+  /** A short-lived, single-use code to embed in the AI-HUB QR. */
+  pairingCode(): PairingCode | undefined
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean
   close(): void
 }
 
 export function isMobileApiPath(pathname: string): boolean {
   return pathname === MOBILE_API_PREFIX || pathname.startsWith(MOBILE_API_PREFIX + '/')
+}
+
+/** Read the small pairing body so a one-time token can be swapped for the PIN. */
+async function bufferRequestBody(request: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of request) {
+    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += value.length
+    if (size > 64 * 1024) throw new Error('Pairing body is too large.')
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks)
+}
+
+/** Replays the buffered body for the upstream handler, which uses event listeners. */
+function replayRequest(request: IncomingMessage, body: Buffer): IncomingMessage {
+  const replay = new PassThrough()
+  replay.end(body)
+  Object.assign(replay as unknown as Record<string, unknown>, {
+    headers: request.headers,
+    method: request.method,
+    url: request.url,
+    socket: request.socket,
+    httpVersion: request.httpVersion
+  })
+  return replay as unknown as IncomingMessage
 }
 
 function requestPath(request: IncomingMessage): string {
@@ -187,6 +224,8 @@ class EmbeddedMobileApiHost implements MobileApiHost {
   private readonly deviceStreams = new Map<string, Set<ServerResponse>>()
   /** 配对失败时间戳（全局，不按可伪造的请求头分桶）。 */
   private readonly pairingFailures: number[] = []
+  private currentPairingCode?: PairingCode
+  private readonly pairingCodes = new Map<string, number>()
 
   constructor(private readonly options: MobileApiHostOptions) {
     const upstream = loadUpstream()
@@ -265,8 +304,73 @@ class EmbeddedMobileApiHost implements MobileApiHost {
     if (!this.upgrades.has(`${MOBILE_API_V1_PREFIX}/preview`)) {
       throw new Error('dsh-mobile-plugin 缺少移动 API 预览路由')
     }
+    this.installPairingTokenAlias()
     this.installPairingRateLimit()
     this.installDeviceRevokeRoute()
+  }
+
+  /**
+   * The QR carries this code instead of the durable PIN. The App still sends a
+   * six-digit code to /pair; we swap a valid token for the PIN before the
+   * upstream handler sees it, so manual PIN pairing keeps working unchanged.
+   */
+  pairingCode(): PairingCode | undefined {
+    if (!this.options.pinEnabled()) return undefined
+    const now = Date.now()
+    if (this.currentPairingCode && this.currentPairingCode.expiresAt > now + 30_000) return this.currentPairingCode
+    for (const [code, expiresAt] of this.pairingCodes) {
+      if (expiresAt <= now) this.pairingCodes.delete(code)
+    }
+    const fixed = this.options.pin()
+    let code = ''
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      code = String(randomInt(0, 1_000_000)).padStart(6, '0')
+      if (code !== fixed && !this.pairingCodes.has(code)) break
+    }
+    const next = { code, expiresAt: now + AIHUB_PAIRING_TTL_MS }
+    this.currentPairingCode = next
+    this.pairingCodes.set(code, next.expiresAt)
+    if (this.pairingCodes.size > 32) {
+      const oldest = this.pairingCodes.keys().next().value
+      if (oldest) this.pairingCodes.delete(oldest)
+    }
+    return next
+  }
+
+  private consumePairingCode(value: string): boolean {
+    const expiresAt = this.pairingCodes.get(value)
+    if (!expiresAt || expiresAt <= Date.now()) {
+      if (expiresAt) this.pairingCodes.delete(value)
+      return false
+    }
+    this.pairingCodes.delete(value)
+    if (this.currentPairingCode?.code === value) this.currentPairingCode = undefined
+    return true
+  }
+
+  private installPairingTokenAlias(): void {
+    const path = `${MOBILE_API_V1_PREFIX}/pair`
+    const handler = this.routes.get(path)
+    if (!handler) return
+    this.routes.set(path, async (request, response) => {
+      let replay = request
+      try {
+        const raw = await bufferRequestBody(request)
+        if (raw.length > 0) {
+          const body = JSON.parse(raw.toString('utf8')) as Record<string, unknown>
+          if (body && typeof body.code === 'string' && this.consumePairingCode(body.code)) {
+            const pin = this.options.pin()
+            if (pin) body.code = pin
+          }
+          replay = replayRequest(request, Buffer.from(JSON.stringify(body)))
+        } else {
+          replay = replayRequest(request, raw)
+        }
+      } catch {
+        replay = replayRequest(request, Buffer.alloc(0))
+      }
+      await handler(replay, response)
+    })
   }
 
   /** A global, header-independent budget on the unauthenticated pairing route. */
@@ -472,6 +576,7 @@ function unavailableHost(error: unknown, options: MobileApiHostOptions): MobileA
     available: false,
     error: message,
     onlineDeviceIds: () => new Set<string>(),
+    pairingCode: () => undefined,
     revokeDevice: () => 0,
     disconnectDevice() {},
     async handle(request, response) {

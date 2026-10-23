@@ -155,6 +155,35 @@ describe('embedded mobile API', () => {
     expect(JSON.parse(status.body)).toMatchObject({ ok: true })
   })
 
+  it('accepts a one-time QR code once and keeps the fixed PIN working', async () => {
+    const { host, port } = await startBridge('246810')
+    const pairing = host.pairingCode()
+    expect(pairing).toBeTruthy()
+    expect(pairing!.code).toMatch(/^[0-9]{6}$/)
+    expect(pairing!.expiresAt).toBeGreaterThan(Date.now())
+
+    const viaQr = await call(port, '/api/mobile/v1/pair', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: pairing!.code, device: { name: 'qr-phone' } })
+    })
+    expect(viaQr.status).toBe(200)
+
+    const replay = await call(port, '/api/mobile/v1/pair', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: pairing!.code, device: { name: 'qr-replay' } })
+    })
+    expect(replay.status).toBe(401)
+
+    const manual = await call(port, '/api/mobile/v1/pair', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: '246810', device: { name: 'manual-phone' } })
+    })
+    expect(manual.status).toBe(200)
+  })
+
   it('rejects the stateless bearer token and revokes the device credential', async () => {
     const { port } = await startBridge('246810')
     const paired = await call(port, '/api/mobile/v1/pair', {

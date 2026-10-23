@@ -41,6 +41,9 @@ const STATE_FIELDS = [
   'onlineDeviceCount',
   'aihubQrSvg',
   'aihubLanUrls',
+  'aihubAvailable',
+  'aihubError',
+  'aihubPairingExpiresAt',
   'tunnelActive',
   'tunnelLoading',
   'tunnelProvider',
@@ -416,7 +419,7 @@ describe('phone bridge fixed public URL routes', () => {
     expect(fallback.body.mode).toBe('fixed')
   })
 
-  it('offers an AI-HUB LAN pairing QR once a fixed PIN is set', async () => {
+  it('lists AI-HUB LAN addresses and omits the QR when the mobile API host is unavailable', async () => {
     const settingsFile = await tempSettingsFile()
     const { port } = await startHarness({ settingsFile })
     await postJson(port, '/phone-bridge/pin', { pin: '051109' })
@@ -425,7 +428,10 @@ describe('phone bridge fixed public URL routes', () => {
     expect(Array.isArray(state.aihubLanUrls)).toBe(true)
     expect((state.aihubLanUrls as string[]).length).toBeGreaterThan(0)
     expect(String((state.aihubLanUrls as string[])[0])).toMatch(/^http:\/\//)
-    expect(String(state.aihubQrSvg)).toMatch(/^<svg/)
+    // The test harness has no DSH gateway, so the embedded mobile API is
+    // unavailable and must not advertise a QR that can never pair.
+    expect(state.aihubQrSvg).toBeNull()
+    expect(state.aihubPairingExpiresAt).toBeNull()
   })
 
   it('stops the temporary tunnel when a fixed public domain is saved', async () => {

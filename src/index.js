@@ -206,6 +206,9 @@ function idleState(publicUrl = null, lastPublicUrlCheck = null, expectedPort = P
     onlineDeviceCount: 0,
     aihubQrSvg: null,
     aihubLanUrls: [],
+    aihubPairingExpiresAt: null,
+    aihubAvailable: false,
+    aihubError: null,
     tunnelActive: false,
     tunnelLoading: false,
     tunnelProvider: null,
@@ -258,17 +261,20 @@ async function bridgeState(bridge, runtime) {
   const onlineDeviceCount = devices.filter((device) => device.online === true).length
   const aihubLanUrls = bridgePort ? bridge.lanAddressCandidates().map((address) => `http://${address}:${bridgePort}`) : []
   const aihubPin = pins.pinConsent === true ? pins.pairingPin : undefined
+  const aihubPairing = aihubPin ? runtime?.aihubPairingCode?.() : undefined
+  const aihubPairingCode = aihubPairing?.code
+  const aihubPairingExpiresAt = aihubPairing?.expiresAt ?? null
   const relay = runtime?.relayState?.() ?? {}
   const relayInstanceId = typeof relay.instanceId === 'string' ? relay.instanceId : undefined
   const relayName = typeof relay.name === 'string' && relay.name ? relay.name : hostname()
   const aihubPairingText =
-    aihubPin && relayInstanceId && aihubLanUrls.length > 0
+    aihubPairingCode && relayInstanceId && aihubLanUrls.length > 0
       ? `dshpair://v1?data=${encodeURIComponent(JSON.stringify({
           type: 'dsh-pair',
           version: 1,
           name: relayName,
           instanceId: relayInstanceId,
-          code: aihubPin,
+          code: aihubPairingCode,
           relayUrl: '',
           lanUrls: aihubLanUrls,
           lanCandidates: aihubLanUrls,
@@ -286,6 +292,9 @@ async function bridgeState(bridge, runtime) {
     onlineDeviceCount,
     aihubQrSvg,
     aihubLanUrls,
+    aihubPairingExpiresAt,
+    aihubAvailable: runtime?.aihubAvailable?.() === true,
+    aihubError: runtime?.aihubError?.() ?? null,
     tunnelActive: snapshot.tunnelActive === true,
     tunnelLoading: snapshot.tunnelLoading === true,
     tunnelProvider: snapshot.tunnelProvider ?? null,
@@ -590,6 +599,9 @@ export function apply(ctx, config = {}) {
     publicUrl: savedSettings.publicUrl,
     expectedPort: config.publicPort ?? PORT_START,
     lastPublicUrlCheck: null,
+    aihubPairingCode: () => mobileApiHolder.current?.pairingCode(),
+    aihubAvailable: () => mobileApiHolder.current?.available === true,
+    aihubError: () => mobileApiHolder.current?.error,
     devices: () => {
       const list = mobileDevices.list()
       if (list.some((device) => device.lastIp)) ensureIpRegionInstalled()

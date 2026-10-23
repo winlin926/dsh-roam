@@ -43,6 +43,8 @@ const STATE_FIELDS = [
   'onlineDeviceCount',
   'aihubQrSvg',
   'aihubLanUrls',
+  'aihubAvailable',
+  'aihubError',
   'tunnelActive',
   'tunnelLoading',
   'tunnelProvider',

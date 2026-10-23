@@ -160,7 +160,7 @@ describe('private key ACL', () => {
     writeFileSync(keyPath, 'secret')
     await restrictPrivateKeyAcl(keyPath)
     const { execFileSync } = await import('node:child_process')
-    const sids = execFileSync('powershell', [
+    const sids = execFileSync('pwsh', [
       '-NoProfile',
       '-Command',
       `(Get-Acl '${keyPath}').Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }`,

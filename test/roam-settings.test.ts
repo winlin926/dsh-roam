@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import net, { type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -233,6 +233,7 @@ describe('fixed public URL validation', () => {
   it('rejects non-http schemes, paths, private hosts and garbage', () => {
     const invalid = [
       'ftp://dsh.example.com',
+      'http://dsh.example.com',
       'https://dsh.example.com/pair',
       'https://dsh.example.com?token=1',
       'https://dsh.example.com#fragment',
@@ -259,6 +260,24 @@ describe('fixed public URL validation', () => {
 })
 
 describe('phone bridge fixed public URL routes', () => {
+  it('rejects a rebinding Host header on the settings routes', async () => {
+    const settingsFile = await tempSettingsFile()
+    const { port } = await startHarness({ settingsFile })
+
+    const status = await new Promise<number>((resolve, reject) => {
+      const outgoing = request(
+        { host: '127.0.0.1', port, path: '/phone-bridge/state', method: 'GET', headers: { host: 'evil.example' } },
+        (incoming) => {
+          incoming.resume()
+          incoming.on('end', () => resolve(incoming.statusCode ?? 0))
+        },
+      )
+      outgoing.on('error', reject)
+      outgoing.end()
+    })
+    expect(status).toBe(403)
+  })
+
   it('persists the setting across a new plugin instance and reads a corrupt file as unconfigured', async () => {
     const settingsFile = await tempSettingsFile()
     const first = await startHarness({ settingsFile })
@@ -329,6 +348,7 @@ describe('phone bridge fixed public URL routes', () => {
 
     for (const publicUrl of [
       'ftp://dsh.example.com',
+      'http://dsh.example.com',
       'https://dsh.example.com/pair',
       'http://127.0.0.1:43128',
       'nonsense',

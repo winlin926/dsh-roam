@@ -128,6 +128,23 @@ function headerValue(value) {
 }
 
 /**
+ * The settings routes answer only on loopback, but a DNS-rebinding page can
+ * also reach 127.0.0.1 while sending its own Host. Requiring a loopback Host
+ * keeps that page from reading the PIN or driving the bridge. Requests without
+ * a Host header come from local tooling and tests, which never leave the host.
+ */
+function isLoopbackHost(value) {
+  const host = headerValue(value)
+  if (!host) return true
+  try {
+    const hostname = new URL('http://' + host).hostname.toLowerCase()
+    return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]'
+  } catch {
+    return false
+  }
+}
+
+/**
  * Rejects browser-driven cross-site POSTs (a drive-by page on another origin
  * could otherwise open a public tunnel or store a durable password). Requests
  * without Fetch Metadata and Origin headers — local tooling, tests — pass.
@@ -352,7 +369,7 @@ function registerLoopbackRoute(ctx, label, method, path, handle) {
       kind: 'exact',
       path,
       handler(request, response) {
-        if (!isLoopback(request.socket?.remoteAddress)) {
+        if (!isLoopback(request.socket?.remoteAddress) || !isLoopbackHost(request.headers?.host)) {
           writeText(response, 403, 'Loopback only.')
           return
         }
@@ -609,7 +626,7 @@ export function apply(ctx, config = {}) {
       kind: 'exact',
       path: DESKTOP_URL_PATH,
       handler(request, response) {
-        if (!isLoopback(request.socket?.remoteAddress)) {
+        if (!isLoopback(request.socket?.remoteAddress) || !isLoopbackHost(request.headers?.host)) {
           writeText(response, 403, 'Desktop only.')
           return
         }

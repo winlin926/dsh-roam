@@ -27,8 +27,8 @@ export function normalizePublicUrl(raw: string): string | null {
   } catch {
     throw new Error('公网域名格式无效。')
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('公网域名必须使用 http 或 https。')
+  if (parsed.protocol !== 'https:') {
+    throw new Error('公网域名必须使用 https。')
   }
   if (parsed.username || parsed.password) {
     throw new Error('公网域名不能包含用户信息。')

@@ -129,6 +129,11 @@ pnpm test
 npm pack --dry-run
 ```
 
+## 版本记录
+
+- npm：https://www.npmjs.com/package/dsh-roam
+- Releases：https://github.com/winlin926/dsh-roam/releases
+
 ## 许可证
 
 MIT。第三方组件与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { createServer, request as httpRequest, type IncomingMessage } from 'node:http'
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse
+} from 'node:http'
 import { createRequire } from 'node:module'
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
@@ -309,7 +314,7 @@ describe('LAN mobile bridge pairing surface', () => {
     expect(history.status).toBe(200)
     expect(await history.json()).toEqual({
       ok: true,
-      value: { events: records, projections, hasMore: false }
+      value: { events: records, projections, hasMore: false, oldestSeq: null, throughSeq: 7 }
     })
     expect(pageRequest).toEqual({
       request: {
@@ -318,6 +323,129 @@ describe('LAN mobile bridge pairing surface', () => {
         maxMessages: 100
       }
     })
+  })
+
+  it('walks backwards through history pages without repeating records', async () => {
+    const pageRequests: unknown[] = []
+    const recordsFor = (...seqs: number[]): unknown[] => seqs.map((seq) => ({
+      type: 'event',
+      event: {
+        type: 'user/message',
+        seq,
+        time: seq,
+        content: [{ type: 'text', text: `message ${seq}` }]
+      }
+    }))
+    const pages = new Map<number | undefined, { records: unknown[]; hasMore: boolean }>([
+      [undefined, { records: recordsFor(8, 9, 10), hasMore: true }],
+      [8, { records: recordsFor(5, 6, 7), hasMore: true }],
+      [5, { records: recordsFor(2, 3, 4), hasMore: false }]
+    ])
+    const harness = createServer(async (request, response) => {
+      if (request.method !== 'POST') {
+        response.statusCode = 404
+        response.end()
+        return
+      }
+      const envelope = await readJsonBody<{
+        rpcId: string
+        method: string
+        payload: { args: { request?: { beforeSeq?: number } } }
+      }>(request)
+      let value: unknown
+      if (envelope.method === 'session/list') {
+        value = {
+          items: [
+            {
+              sessionId: 'session-1',
+              projections: { asOfSeq: 10, values: {} }
+            }
+          ]
+        }
+      } else if (envelope.method === 'session/page') {
+        pageRequests.push(envelope.payload.args)
+        const page = pages.get(envelope.payload.args.request?.beforeSeq)
+        if (!page) {
+          response.statusCode = 500
+          response.end()
+          return
+        }
+        value = page
+      } else {
+        response.statusCode = 404
+        response.end()
+        return
+      }
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({
+        type: 'server-response',
+        rpcId: envelope.rpcId,
+        result: { ok: true, value }
+      }))
+    })
+    servers.push(harness)
+    await new Promise<void>((resolve) => harness.listen(0, '127.0.0.1', resolve))
+    const harnessPort = (harness.address() as AddressInfo).port
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => `http://127.0.0.1:${harnessPort}`
+    })
+    bridges.push(bridge)
+    const { port, cookie } = await pairBridge(bridge)
+
+    const readPage = async (beforeSeq?: number): Promise<{
+      events: { event: { seq: number } }[]
+      hasMore: boolean
+      oldestSeq: number | null
+      throughSeq: number
+    }> => {
+      const response = await mobileRpc(port, cookie, 'session.history', {
+        sessionId: 'session-1',
+        maxMessages: 100,
+        ...(beforeSeq === undefined ? {} : { beforeSeq })
+      })
+      expect(response.status).toBe(200)
+      return (await response.json()).value
+    }
+
+    const tail = await readPage()
+    const older = await readPage(tail.oldestSeq!)
+    const oldest = await readPage(older.oldestSeq!)
+
+    expect(tail).toMatchObject({ hasMore: true, oldestSeq: 8, throughSeq: 10 })
+    expect(older).toMatchObject({ hasMore: true, oldestSeq: 5, throughSeq: 10 })
+    expect(oldest).toMatchObject({ hasMore: false, oldestSeq: 2, throughSeq: 10 })
+
+    const sequences = [...tail.events, ...older.events, ...oldest.events]
+      .map((record) => record.event.seq)
+    expect(sequences.sort((left, right) => left - right)).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10])
+
+    expect(pageRequests).toEqual([
+      {
+        request: {
+          address: { kind: 'session', sessionId: 'session-1' },
+          throughSeq: 10,
+          maxMessages: 100
+        }
+      },
+      {
+        request: {
+          address: { kind: 'session', sessionId: 'session-1' },
+          throughSeq: 10,
+          maxMessages: 100,
+          beforeSeq: 8,
+          turnWindow: { minMessages: 50, minTurns: 2 }
+        }
+      },
+      {
+        request: {
+          address: { kind: 'session', sessionId: 'session-1' },
+          throughSeq: 10,
+          maxMessages: 100,
+          beforeSeq: 5,
+          turnWindow: { minMessages: 50, minTurns: 2 }
+        }
+      }
+    ])
   })
 
   it('streams native session follow snapshots and events to an authorized phone', async () => {
@@ -436,6 +564,243 @@ describe('LAN mobile bridge pairing surface', () => {
     expect(upgraded.length).toBeGreaterThan(0)
     for (const socket of upgraded) socket.destroy()
     expect(upgraded.every((socket) => socket.destroyed)).toBe(true)
+  })
+})
+
+describe('mobile prompt image validation', () => {
+  const ONE_PIXEL_PNG =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=='
+
+  async function pairedPort(): Promise<{ port: number; cookie: string }> {
+    const bridge = new LanMobileBridge({ harnessUrl: () => 'http://127.0.0.1:9999' })
+    bridges.push(bridge)
+    return pairBridge(bridge)
+  }
+
+  function promptPayload(content: unknown[], requestId = 'prompt-1'): Record<string, unknown> {
+    return {
+      sessionId: 'session-1',
+      mode: 'steer',
+      requestId,
+      content,
+      clientTimeZone: 'Asia/Shanghai'
+    }
+  }
+
+  it('rejects an svg image block with unsupported-image', async () => {
+    const { port, cookie } = await pairedPort()
+    const response = await mobileRpc(
+      port,
+      cookie,
+      'session.prompt',
+      promptPayload([
+        { type: 'image', mediaType: 'image/svg+xml', data: ONE_PIXEL_PNG, name: 'vector.svg' }
+      ])
+    )
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ ok: false, code: 'unsupported-image' })
+  })
+
+  it('rejects more than six images with too-many-images', async () => {
+    const { port, cookie } = await pairedPort()
+    const images = Array.from({ length: 7 }, (_, index) => ({
+      type: 'image',
+      mediaType: 'image/png',
+      data: ONE_PIXEL_PNG,
+      name: `image-${index}.png`
+    }))
+    const response = await mobileRpc(port, cookie, 'session.prompt', promptPayload(images))
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ ok: false, code: 'too-many-images' })
+  })
+
+  it('rejects non-canonical base64 with invalid-image-data', async () => {
+    const { port, cookie } = await pairedPort()
+    const response = await mobileRpc(
+      port,
+      cookie,
+      'session.prompt',
+      promptPayload([
+        { type: 'image', mediaType: 'image/png', data: 'not+a+valid+length', name: 'broken.png' }
+      ])
+    )
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ ok: false, code: 'invalid-image-data' })
+  })
+
+  it('rejects prompt text over 32KB with text-too-large', async () => {
+    const { port, cookie } = await pairedPort()
+    const response = await mobileRpc(
+      port,
+      cookie,
+      'session.prompt',
+      promptPayload([{ type: 'text', text: 'a'.repeat(32 * 1024 + 1) }])
+    )
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ ok: false, code: 'text-too-large' })
+  })
+
+  it('forwards a valid 1x1 png prompt to the host with the content intact', async () => {
+    const forwarded: {
+      rpcId: string
+      method?: string
+      payload?: { args?: { request?: Record<string, unknown> } }
+    }[] = []
+    const harnessPort = await startHarnessServer(async (request, response) => {
+      if (request.method !== 'POST') {
+        response.statusCode = 404
+        response.end()
+        return
+      }
+      const envelope = await readJsonBody<{
+        rpcId: string
+        method?: string
+        payload?: { args?: { request?: Record<string, unknown> } }
+      }>(request)
+      forwarded.push(envelope)
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({
+        type: 'server-response',
+        rpcId: envelope.rpcId,
+        result: { ok: true, value: { accepted: true } }
+      }))
+    })
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => `http://127.0.0.1:${harnessPort}`
+    })
+    bridges.push(bridge)
+    const { port, cookie } = await pairBridge(bridge)
+
+    const content = [
+      {
+        type: 'image',
+        mediaType: 'image/png',
+        data: ONE_PIXEL_PNG,
+        name: 'pixel.png',
+        width: 1,
+        height: 1
+      }
+    ]
+    const response = await mobileRpc(
+      port,
+      cookie,
+      'session.prompt',
+      promptPayload(content)
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, value: { accepted: true } })
+    expect(forwarded).toHaveLength(1)
+    expect(forwarded[0]).toMatchObject({
+      method: 'session/prompt',
+      payload: { args: { request: { sessionId: 'session-1' } } }
+    })
+    expect(forwarded[0]!.payload!.args!.request!.content).toEqual(content)
+    expect(forwarded[0]!.payload!.args!.request!.requestId).toBe('prompt-1')
+  })
+})
+
+describe('mobile attachment delivery', () => {
+  const ONE_PIXEL_PNG =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=='
+
+  it('requires both sessionId and attachmentId', async () => {
+    const bridge = new LanMobileBridge({ harnessUrl: () => 'http://127.0.0.1:9999' })
+    bridges.push(bridge)
+    const { port, cookie } = await pairBridge(bridge)
+
+    for (const path of [
+      '/api/attachment',
+      '/api/attachment?sessionId=session-1',
+      '/api/attachment?attachmentId=attachment-1'
+    ]) {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { cookie } })
+      expect(response.status, path).toBe(400)
+      expect(await response.json(), path).toMatchObject({ ok: false, code: 'invalid-request' })
+    }
+  })
+
+  it('reports a host-side missing attachment as 404 with a code', async () => {
+    const harnessPort = await startHarnessServer(async (request, response) => {
+      if (request.method !== 'POST') {
+        response.statusCode = 404
+        response.end()
+        return
+      }
+      await readJsonBody(request)
+      response.statusCode = 404
+      response.end('missing')
+    })
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => `http://127.0.0.1:${harnessPort}`
+    })
+    bridges.push(bridge)
+    const { port, cookie } = await pairBridge(bridge)
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/attachment?sessionId=session-1&attachmentId=attachment-1`,
+      { headers: { cookie } }
+    )
+    expect(response.status).toBe(404)
+    expect(await response.json()).toMatchObject({ ok: false, code: 'attachment-not-found' })
+  })
+
+  it('streams an attachment with private caching and sniffing protection', async () => {
+    const harnessPort = await startHarnessServer(async (request, response) => {
+      if (request.method !== 'POST') {
+        response.statusCode = 404
+        response.end()
+        return
+      }
+      const envelope = await readJsonBody<{ rpcId: string }>(request)
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({
+        type: 'server-response',
+        rpcId: envelope.rpcId,
+        result: {
+          ok: true,
+          value: {
+            attachment: { mediaType: 'image/png' },
+            data: ONE_PIXEL_PNG
+          }
+        }
+      }))
+    })
+    const bridge = new LanMobileBridge({
+      harnessUrl: () => `http://127.0.0.1:${harnessPort}`
+    })
+    bridges.push(bridge)
+    const { port, cookie } = await pairBridge(bridge)
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/attachment?sessionId=session-1&attachmentId=attachment-1`,
+      { headers: { cookie } }
+    )
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('image/png')
+    expect(response.headers.get('etag')).toBe('"attachment-1"')
+    expect(response.headers.get('cache-control')).toBe('private, max-age=3600')
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(
+      Buffer.from(ONE_PIXEL_PNG, 'base64')
+    )
+  })
+
+  it('rejects a non-prompt request body over 64KB with 413', async () => {
+    const bridge = new LanMobileBridge({ harnessUrl: () => 'http://127.0.0.1:9999' })
+    bridges.push(bridge)
+    const { port, cookie } = await pairBridge(bridge)
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/rpc`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        method: 'workspace.list',
+        payload: { padding: 'x'.repeat(65 * 1024) }
+      })
+    })
+    expect(response.status).toBe(413)
+    expect(await response.json()).toMatchObject({ ok: false, code: 'payload-too-large' })
   })
 })
 
@@ -721,7 +1086,223 @@ describe('LAN mobile bridge user questions', () => {
   })
 })
 
+describe('LAN mobile bridge tool approvals', () => {
+  it('reports a pending approval and settles both desktop outcomes exactly once', async () => {
+    const { harnessUrl, results, clients } = await startApprovalHarness((client) => {
+      sendMuxReady(client, 'approval-client')
+      sendApprovalRequest(client, 'approval-1', {
+        toolName: 'shell',
+        callId: 'call-1',
+        reason: 'The command writes outside the workspace.',
+        displayReason: 'Run the build'
+      })
+    })
+    const bridge = new LanMobileBridge({ harnessUrl: () => harnessUrl })
+    bridges.push(bridge)
+    const { port, cookie } = await pairBridge(bridge)
 
+    await waitFor(async () => {
+      const approval = await readPendingApproval(port, cookie)
+      return approval?.eventId === 'approval-1'
+    })
+    expect(await readPendingApproval(port, cookie)).toEqual({
+      eventId: 'approval-1',
+      sessionId: 'session-1',
+      toolName: 'shell',
+      callId: 'call-1',
+      reason: 'The command writes outside the workspace.',
+      displayReason: 'Run the build'
+    })
+
+    const allowed = await mobileRpc(port, cookie, 'approval.answer', {
+      sessionId: 'session-1',
+      eventId: 'approval-1',
+      outcome: 'allowed-once'
+    })
+    expect(allowed.status).toBe(200)
+    expect(await allowed.json()).toEqual({ ok: true, value: { ok: true } })
+    expect(results).toEqual([
+      {
+        type: 'client-request',
+        rpcId: expect.any(String),
+        method: '$events/result',
+        payload: {
+          args: {
+            clientId: 'approval-client',
+            eventId: 'approval-1',
+            outcome: { kind: 'result', value: 'allowed-once' }
+          }
+        }
+      }
+    ])
+    expect(await readPendingApproval(port, cookie)).toBeNull()
+
+    sendApprovalRequest(clients[0]!, 'approval-2', { toolName: 'write_file' })
+    await waitFor(async () => {
+      const approval = await readPendingApproval(port, cookie)
+      return approval !== null && approval.eventId === 'approval-2'
+    })
+    expect(await readPendingApproval(port, cookie)).toEqual({
+      eventId: 'approval-2',
+      sessionId: 'session-1',
+      toolName: 'write_file'
+    })
+
+    const rejected = await mobileRpc(port, cookie, 'approval.answer', {
+      sessionId: 'session-1',
+      eventId: 'approval-2',
+      outcome: 'rejected'
+    })
+    expect(rejected.status).toBe(200)
+    expect(results).toHaveLength(2)
+    expect(results[1]).toMatchObject({
+      payload: {
+        args: {
+          clientId: 'approval-client',
+          eventId: 'approval-2',
+          outcome: { kind: 'result', value: 'rejected' }
+        }
+      }
+    })
+
+    const duplicate = await mobileRpc(port, cookie, 'approval.answer', {
+      sessionId: 'session-1',
+      eventId: 'approval-2',
+      outcome: 'rejected'
+    })
+    expect(duplicate.status).toBe(409)
+    expect(await duplicate.json()).toMatchObject({
+      ok: false,
+      code: 'approval-not-pending'
+    })
+    expect(results).toHaveLength(2)
+  })
+
+  it('drops a pending approval when the carrier disconnects and refuses the stale answer', async () => {
+    const { harnessUrl, results, clients } = await startApprovalHarness((client, connection) => {
+      sendMuxReady(client, `approval-disconnect-${connection}`)
+      if (connection === 1) {
+        sendApprovalRequest(client, 'approval-stale', { toolName: 'shell' })
+      }
+    })
+    const bridge = new LanMobileBridge({ harnessUrl: () => harnessUrl })
+    bridges.push(bridge)
+    const { port, cookie } = await pairBridge(bridge)
+
+    await waitFor(async () => {
+      const approval = await readPendingApproval(port, cookie)
+      return approval !== null && approval.eventId === 'approval-stale'
+    })
+    clients[0]!.close()
+
+    await waitFor(async () => (await readPendingApproval(port, cookie)) === null)
+    const stale = await mobileRpc(port, cookie, 'approval.answer', {
+      sessionId: 'session-1',
+      eventId: 'approval-stale',
+      outcome: 'allowed-once'
+    })
+    expect(stale.status).toBe(409)
+    expect(await stale.json()).toMatchObject({
+      ok: false,
+      code: 'approval-not-pending'
+    })
+    expect(results).toEqual([])
+  })
+
+  it('does not resurrect a pending approval when the bridge restarts', async () => {
+    const { harnessUrl } = await startApprovalHarness((client, connection) => {
+      sendMuxReady(client, `approval-restart-${connection}`)
+      if (connection === 1) {
+        sendApprovalRequest(client, 'approval-restart', { toolName: 'shell' })
+      }
+    })
+    const bridge = new LanMobileBridge({ harnessUrl: () => harnessUrl })
+    bridges.push(bridge)
+    const first = await pairBridge(bridge)
+
+    await waitFor(async () => {
+      const approval = await readPendingApproval(first.port, first.cookie)
+      return approval !== null && approval.eventId === 'approval-restart'
+    })
+    await bridge.stop()
+
+    const restarted = await pairBridge(bridge)
+    await waitFor(async () => {
+      const clientId = (bridge as unknown as { eventClientId?: string }).eventClientId
+      return clientId === 'approval-restart-2'
+    })
+    expect(await readPendingApproval(restarted.port, restarted.cookie)).toBeNull()
+  })
+})
+
+async function startHarnessServer(
+  handler: (request: IncomingMessage, response: ServerResponse) => Promise<void>
+): Promise<number> {
+  const server = createServer((request, response) => {
+    handler(request, response).catch(() => {
+      if (response.headersSent) {
+        if (!response.writableEnded) response.end()
+        return
+      }
+      response.statusCode = 500
+      response.end()
+    })
+  })
+  servers.push(server)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  return (server.address() as AddressInfo).port
+}
+
+async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
+  const chunks: Buffer[] = []
+  for await (const chunk of request) chunks.push(Buffer.from(chunk))
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T
+}
+
+interface ForwardedRpc {
+  rpcId: string
+  method?: string
+  payload?: { args?: Record<string, unknown> }
+}
+
+type ForwardingReply =
+  | { ok: true; value?: unknown }
+  | { ok: false; code: string; message: string }
+
+/**
+ * Fake Host that records every forwarded RPC and answers with a scripted reply.
+ * The bridge translates a Host `result.error.code` verbatim into the mobile
+ * response, so tests can assert both the forwarded envelope and pass-through.
+ */
+async function pairedForwardingBridge(
+  reply: (endpoint: string, args: Record<string, unknown>) => ForwardingReply
+): Promise<{ port: number; cookie: string; forwarded: ForwardedRpc[] }> {
+  const forwarded: ForwardedRpc[] = []
+  const harnessPort = await startHarnessServer(async (request, response) => {
+    if (request.method !== 'POST') {
+      response.statusCode = 404
+      response.end()
+      return
+    }
+    const envelope = await readJsonBody<ForwardedRpc>(request)
+    forwarded.push(envelope)
+    const answer = reply(envelope.method ?? '', envelope.payload?.args ?? {})
+    response.setHeader('content-type', 'application/json')
+    response.end(JSON.stringify({
+      type: 'server-response',
+      rpcId: envelope.rpcId,
+      result: answer.ok
+        ? { ok: true, value: answer.value ?? { accepted: true } }
+        : { ok: false, error: { code: answer.code, message: answer.message } }
+    }))
+  })
+  const bridge = new LanMobileBridge({
+    harnessUrl: () => `http://127.0.0.1:${harnessPort}`
+  })
+  bridges.push(bridge)
+  const { port, cookie } = await pairBridge(bridge)
+  return { port, cookie, forwarded }
+}
 
 async function pairBridge(bridge: LanMobileBridge): Promise<{ port: number; cookie: string }> {
   const snapshot = await bridge.start()
@@ -817,6 +1398,153 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 2_000): Promis
   }
   throw new Error('Timed out waiting for condition.')
 }
+
+interface TestMuxClient extends TestWebSocket {
+  close(): void
+}
+
+async function startApprovalHarness(
+  open: (client: TestMuxClient, connection: number) => void
+): Promise<{ harnessUrl: string; results: unknown[]; clients: TestMuxClient[] }> {
+  const results: unknown[] = []
+  const clients: TestMuxClient[] = []
+  let connections = 0
+  const harness = createServer(async (request, response) => {
+    if (request.method === 'POST' && request.url === '/api/$events/result') {
+      const envelope = await readJsonBody<{ rpcId: string }>(request)
+      results.push(envelope)
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({
+        type: 'server-response',
+        rpcId: envelope.rpcId,
+        result: { ok: true, value: { accepted: true } }
+      }))
+      return
+    }
+    response.statusCode = 404
+    response.end()
+  })
+  const muxServer = new WebSocketServer({ noServer: true })
+  webSocketServers.push(muxServer)
+  harness.on('upgrade', (request, socket, head) => {
+    if (request.url !== '/api/remote.mux') return socket.destroy()
+    muxServer.handleUpgrade(request, socket, head, (client) => {
+      const peer = client as TestMuxClient
+      clients.push(peer)
+      connections += 1
+      open(peer, connections)
+    })
+  })
+  servers.push(harness)
+  await new Promise<void>((resolve) => harness.listen(0, '127.0.0.1', resolve))
+  return {
+    harnessUrl: `http://127.0.0.1:${(harness.address() as AddressInfo).port}`,
+    results,
+    clients
+  }
+}
+
+function sendMuxReady(client: TestMuxClient, clientId: string): void {
+  client.send(JSON.stringify({
+    type: 'item',
+    streamId: 'mobile-events',
+    value: { type: 'ready', clientId, host: { home: '/home/test' } }
+  }))
+}
+
+function sendApprovalRequest(
+  client: TestMuxClient,
+  eventId: string,
+  request: Record<string, unknown>
+): void {
+  client.send(JSON.stringify({
+    type: 'item',
+    streamId: 'mobile-events',
+    value: {
+      type: 'waterfall',
+      event: 'approval/request',
+      eventId,
+      agentId: 'session-1',
+      request
+    }
+  }))
+}
+
+async function readPendingApproval(
+  port: number,
+  cookie: string
+): Promise<Record<string, unknown> | null> {
+  const response = await mobileRpc(port, cookie, 'approval.pending', {
+    sessionId: 'session-1'
+  })
+  const body = await response.json() as {
+    value?: { approval?: Record<string, unknown> | null }
+  }
+  return body.value?.approval ?? null
+}
+
+describe('browser connection visibility', () => {
+  it('counts distinct pairing sessions without exposing their cookies or treating idle as disconnected', async () => {
+    let now = Date.now()
+    const bridge = new LanMobileBridge({ harnessUrl: () => 'http://127.0.0.1:9999', now: () => now })
+    bridges.push(bridge)
+    const first = await pairBridge(bridge)
+    const second = await pairBridge(bridge)
+    const devices = bridge.snapshot().browserDevices
+    expect(devices).toHaveLength(2)
+    expect(devices.every(device => device.status === 'active')).toBe(true)
+    expect(new Set(devices.map(device => device.id)).size).toBe(2)
+    for (const device of devices) {
+      expect(device.id).toMatch(/^[a-f0-9]{8}$/)
+      expect(JSON.stringify(device)).not.toContain(first.cookie)
+      expect(JSON.stringify(device)).not.toContain(second.cookie)
+    }
+    const before = devices.map(device => device.id)
+    await fetch(`http://127.0.0.1:${first.port}/api/status`, { headers: { cookie: first.cookie } })
+    expect(bridge.snapshot().browserDevices.map(device => device.id).sort()).toEqual([...before].sort())
+
+    now += 29_999
+    expect(bridge.snapshot().connected).toBe(true)
+    expect(bridge.snapshot().browserDevices.every(device => device.status === 'active')).toBe(true)
+    now += 1
+    expect(bridge.snapshot().connected).toBe(false)
+    expect(bridge.snapshot().browserDevices.every(device => device.status === 'idle')).toBe(true)
+  })
+
+  it('shows a manually suspended session only once and restores the same opaque id', async () => {
+    const bridge = new LanMobileBridge({ harnessUrl: () => 'http://127.0.0.1:9999' })
+    bridges.push(bridge)
+    const { port, cookie } = await pairBridge(bridge)
+    const [before] = bridge.snapshot().browserDevices
+    bridge.suspendMobileSessions()
+    expect(bridge.snapshot().connected).toBe(false)
+    expect(bridge.snapshot().browserDevices).toHaveLength(1)
+    expect(bridge.snapshot().browserDevices[0]).toMatchObject({ id: before!.id, status: 'disconnected' })
+
+    const resumed = await fetch(`http://127.0.0.1:${port}/pair/retry`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{}'
+    })
+    expect(resumed.status).toBe(200)
+    expect(bridge.snapshot().browserDevices).toHaveLength(1)
+    expect(bridge.snapshot().browserDevices[0]).toMatchObject({ id: before!.id, status: 'active' })
+
+    const expired = bridge.snapshot()
+    ;(bridge as unknown as { revokeMobileSessions(): void }).revokeMobileSessions()
+    expect(bridge.snapshot().browserDevices).toEqual([])
+    expect(expired.browserDevices[0]!.id).toBe(before!.id)
+  })
+
+  it('removes expired sessions from the visible connection history', async () => {
+    let now = Date.now()
+    const bridge = new LanMobileBridge({ harnessUrl: () => 'http://127.0.0.1:9999', now: () => now })
+    bridges.push(bridge)
+    await pairBridge(bridge)
+    expect(bridge.snapshot().browserDevices).toHaveLength(1)
+    now += 30 * 24 * 60 * 60 * 1000
+    expect(bridge.snapshot().browserDevices).toEqual([])
+  })
+})
+
 describe('pairing token boundary and origin hardening', () => {
 
   it('expires browser sessions and closes the cookie-less handoff window', async () => {
@@ -1389,5 +2117,276 @@ describe('workspace follow snapshot', () => {
     }))
     const removed = await until((value) => value.items.length === 1)
     expect(removed.items.map((item) => item.workspaceId)).toEqual(['w1'])
+  })
+})
+
+describe('mobile session rename', () => {
+  it('forwards session.rename as a request envelope', async () => {
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({
+      ok: true,
+      value: { renamed: true }
+    }))
+    const response = await mobileRpc(port, cookie, 'session.rename', {
+      sessionId: 'session-1',
+      title: '周报'
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, value: { renamed: true } })
+    expect(forwarded).toHaveLength(1)
+    expect(forwarded[0]).toMatchObject({
+      method: 'session/rename',
+      payload: { args: { request: { sessionId: 'session-1', title: '周报' } } }
+    })
+  })
+
+  it('rejects empty and overlong titles with invalid-title', async () => {
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({ ok: true }))
+    for (const title of ['   ', '标'.repeat(201)]) {
+      const response = await mobileRpc(port, cookie, 'session.rename', {
+        sessionId: 'session-1',
+        title
+      })
+      expect(response.status, title).toBe(400)
+      expect(await response.json(), title).toMatchObject({ ok: false, code: 'invalid-title' })
+    }
+    expect(forwarded).toHaveLength(0)
+  })
+})
+
+describe('mobile session search', () => {
+  it('forwards the trimmed search query', async () => {
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({
+      ok: true,
+      value: { hits: [] }
+    }))
+    const response = await mobileRpc(port, cookie, 'session.search', { query: '  发布  ' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, value: { hits: [] } })
+    expect(forwarded[0]).toMatchObject({
+      method: 'session/search',
+      payload: { args: { request: { query: '发布' } } }
+    })
+  })
+
+  it('passes through session/search-unavailable', async () => {
+    const { port, cookie } = await pairedForwardingBridge(() => ({
+      ok: false,
+      code: 'session/search-unavailable',
+      message: '搜索索引尚未就绪。'
+    }))
+    const response = await mobileRpc(port, cookie, 'session.search', { query: '发布' })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      ok: false,
+      code: 'session/search-unavailable',
+      error: '搜索索引尚未就绪。'
+    })
+  })
+})
+
+describe('mobile session archive', () => {
+  it('forwards stopActivity only when it is true', async () => {
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({
+      ok: true,
+      value: { archived: true }
+    }))
+    const plain = await mobileRpc(port, cookie, 'workspace.archiveSession', { sessionId: 'session-1' })
+    expect(plain.status).toBe(200)
+    const stopped = await mobileRpc(port, cookie, 'workspace.archiveSession', {
+      sessionId: 'session-2',
+      stopActivity: true
+    })
+    expect(stopped.status).toBe(200)
+    expect(forwarded.map((item) => item.method)).toEqual([
+      'workspace/archiveSession',
+      'workspace/archiveSession'
+    ])
+    expect(forwarded.map((item) => item.payload!.args)).toEqual([
+      { request: { sessionId: 'session-1' } },
+      { request: { sessionId: 'session-2', stopActivity: true } }
+    ])
+  })
+
+  it('passes through workspace/session-active', async () => {
+    const { port, cookie } = await pairedForwardingBridge(() => ({
+      ok: false,
+      code: 'workspace/session-active',
+      message: '会话仍在运行，无法归档。'
+    }))
+    const response = await mobileRpc(port, cookie, 'workspace.archiveSession', {
+      sessionId: 'session-1',
+      stopActivity: true
+    })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      ok: false,
+      code: 'workspace/session-active',
+      error: '会话仍在运行，无法归档。'
+    })
+  })
+})
+
+describe('mobile queue actions', () => {
+  it('forwards remove, steer, and edit queue actions', async () => {
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({
+      ok: true,
+      value: { updated: true }
+    }))
+    for (const [itemId, action] of [
+      ['item-1', { kind: 'remove' }],
+      ['item-2', { kind: 'steer' }],
+      ['item-3', { kind: 'edit', content: [{ type: 'text', text: '改好的内容' }] }]
+    ] as const) {
+      const response = await mobileRpc(port, cookie, 'session.updateQueue', {
+        sessionId: 'session-1',
+        itemId,
+        action
+      })
+      expect(response.status, itemId).toBe(200)
+    }
+    expect(forwarded.map((item) => item.method)).toEqual([
+      'session/updateQueue',
+      'session/updateQueue',
+      'session/updateQueue'
+    ])
+    expect(forwarded.map((item) => item.payload!.args)).toEqual([
+      { request: { sessionId: 'session-1', itemId: 'item-1', action: { kind: 'remove' } } },
+      { request: { sessionId: 'session-1', itemId: 'item-2', action: { kind: 'steer' } } },
+      {
+        request: {
+          sessionId: 'session-1',
+          itemId: 'item-3',
+          action: { kind: 'edit', content: [{ type: 'text', text: '改好的内容' }] }
+        }
+      }
+    ])
+  })
+
+  it('rejects unknown actions and oversized edit text', async () => {
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({ ok: true }))
+    const unknown = await mobileRpc(port, cookie, 'session.updateQueue', {
+      sessionId: 'session-1',
+      itemId: 'item-1',
+      action: { kind: 'delete' }
+    })
+    expect(unknown.status).toBe(400)
+    expect(await unknown.json()).toMatchObject({ ok: false, code: 'invalid-action' })
+
+    const oversized = await mobileRpc(port, cookie, 'session.updateQueue', {
+      sessionId: 'session-1',
+      itemId: 'item-1',
+      action: { kind: 'edit', content: [{ type: 'text', text: 'a'.repeat(32 * 1024 + 1) }] }
+    })
+    expect(oversized.status).toBe(400)
+    expect(await oversized.json()).toMatchObject({ ok: false, code: 'text-too-large' })
+    expect(forwarded).toHaveLength(0)
+  })
+})
+
+describe('mobile file uploads', () => {
+  it('forwards the upload as agentId plus file request', async () => {
+    const data = Buffer.from('mobile file body').toString('base64')
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({
+      ok: true,
+      value: { receiptId: 'receipt-1' }
+    }))
+    const response = await mobileRpc(port, cookie, 'fileUploads.upload', {
+      agent: 'session-1',
+      request: { data, name: 'report.txt' }
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, value: { receiptId: 'receipt-1' } })
+    expect(forwarded[0]).toMatchObject({
+      method: 'fileUploads/upload',
+      payload: { args: { agentId: 'session-1', request: { data, name: 'report.txt' } } }
+    })
+  })
+
+  it('rejects non-canonical base64 with invalid-file-data', async () => {
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({ ok: true }))
+    const response = await mobileRpc(port, cookie, 'fileUploads.upload', {
+      agent: 'session-1',
+      request: { data: 'not+canonical', name: 'broken.txt' }
+    })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ ok: false, code: 'invalid-file-data' })
+    expect(forwarded).toHaveLength(0)
+  })
+
+  it('sanitizes the uploaded file name before forwarding', async () => {
+    const data = Buffer.from('x').toString('base64')
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({ ok: true }))
+    const response = await mobileRpc(port, cookie, 'fileUploads.upload', {
+      agent: 'session-1',
+      request: { data, name: '  报告/2026\u0007.txt  ' }
+    })
+    expect(response.status).toBe(200)
+    expect(forwarded[0]!.payload!.args).toEqual({
+      agentId: 'session-1',
+      request: { data, name: '报告2026.txt' }
+    })
+  })
+})
+
+describe('mobile prompt file receipts', () => {
+  const ONE_PIXEL_PNG =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=='
+
+  function promptPayload(content: unknown[], requestId = 'prompt-1'): Record<string, unknown> {
+    return {
+      sessionId: 'session-1',
+      mode: 'steer',
+      requestId,
+      content,
+      clientTimeZone: 'Asia/Shanghai'
+    }
+  }
+
+  it('forwards a file receipt block to the host', async () => {
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({
+      ok: true,
+      value: { accepted: true }
+    }))
+    const response = await mobileRpc(
+      port,
+      cookie,
+      'session.prompt',
+      promptPayload([{ type: 'file', receiptId: 'receipt-1', name: 'report.txt' }])
+    )
+    expect(response.status).toBe(200)
+    expect(forwarded).toHaveLength(1)
+    expect(forwarded[0]!.payload!.args!.request!.content).toEqual([
+      { type: 'file', receiptId: 'receipt-1' }
+    ])
+  })
+
+  it('rejects an empty receipt with invalid-file-data', async () => {
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({ ok: true }))
+    const response = await mobileRpc(
+      port,
+      cookie,
+      'session.prompt',
+      promptPayload([{ type: 'file', receiptId: '   ' }])
+    )
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ ok: false, code: 'invalid-file-data' })
+    expect(forwarded).toHaveLength(0)
+  })
+
+  it('counts images and files against one six-attachment budget', async () => {
+    const { port, cookie, forwarded } = await pairedForwardingBridge(() => ({ ok: true }))
+    const content = [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        type: 'image',
+        mediaType: 'image/png',
+        data: ONE_PIXEL_PNG,
+        name: `image-${index}.png`
+      })),
+      { type: 'file', receiptId: 'receipt-7', name: 'extra.txt' }
+    ]
+    const response = await mobileRpc(port, cookie, 'session.prompt', promptPayload(content))
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ ok: false, code: 'too-many-files' })
+    expect(forwarded).toHaveLength(0)
   })
 })

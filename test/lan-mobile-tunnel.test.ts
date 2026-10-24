@@ -568,7 +568,7 @@ describe('LanMobileBridge launch lifecycle', () => {
     await Promise.all([enabling, stopping])
 
     expect(stopped).toEqual(['late'])
-    expect(bridge.snapshot()).toEqual({ running: false, connected: false })
+    expect(bridge.snapshot()).toEqual({ running: false, connected: false, browserDevices: [] })
   })
 })
 

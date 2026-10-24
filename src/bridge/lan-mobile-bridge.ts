@@ -1,10 +1,10 @@
-import { randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createSocket } from 'node:dgram'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { networkInterfaces, tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import WebSocket from 'ws'
 import {
   ensureCloudflaredBinary,
@@ -18,13 +18,54 @@ import {
 import { ACME_CHALLENGE_PREFIX } from './acme-certificate.js'
 import { startPinggyTunnel } from './pinggy-tunnel.js'
 import {
-  renderMobilePage,
   renderMobileReconnectPage,
   renderPairingPinPage
 } from './lan-mobile-pages.js'
+import { serveMobileStatic } from './lan-mobile-static.js'
 import type { PairingPinState, PairingPinStore } from './pairing-pin-store.js'
 
+const MOBILE_PAGE_CSP = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'"
+const MOBILE_MAIN_PAGE_CSP = MOBILE_PAGE_CSP.replace("script-src 'unsafe-inline'", "script-src 'self'")
 const MAX_BODY_BYTES = 64 * 1024
+const MAX_PROMPT_BODY_BYTES = 24 * 1024 * 1024
+const MAX_PROMPT_BLOCKS = 10
+/** Images and file receipts share one prompt-wide attachment budget. */
+const MAX_PROMPT_ATTACHMENTS = 6
+const MAX_PROMPT_TEXT_BYTES = 32 * 1024
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_IMAGE_BASE64_LENGTH = Math.ceil(MAX_IMAGE_BYTES / 3) * 4
+const MAX_IMAGE_TOTAL_BYTES = 16 * 1024 * 1024
+const MAX_RENAME_TITLE_LENGTH = 200
+const MAX_DISPLAY_NAME_LENGTH = 200
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+const MAX_UPLOAD_BASE64_LENGTH = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4
+/** Base64 payload plus its JSON envelope; an upload must fit in one RPC body. */
+const MAX_UPLOAD_BODY_BYTES = MAX_UPLOAD_BASE64_LENGTH + 1024 * 1024
+const MAX_RPC_BODY_BYTES = Math.max(MAX_PROMPT_BODY_BYTES, MAX_UPLOAD_BODY_BYTES)
+const IMAGE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+const PAYLOAD_TOO_LARGE = {
+  ok: false,
+  code: 'payload-too-large',
+  error: '内容太大，请减少图片张数或文件大小后重试'
+} as const
+/** Installable entry for the phone home screen; icons live beside the brand logos. */
+const MOBILE_WEB_MANIFEST = {
+  name: 'DSH Mobile',
+  short_name: 'DSH',
+  start_url: '/',
+  scope: '/',
+  display: 'standalone',
+  background_color: '#ffffff',
+  theme_color: '#ffffff',
+  icons: [
+    { src: '/brand-icon/192', sizes: '192x192', type: 'image/png', purpose: 'any' },
+    { src: '/brand-icon/512', sizes: '512x512', type: 'image/png', purpose: 'any' },
+    { src: '/brand-icon/512', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+  ]
+} as const
+const BRAND_ICON_PREFIX = '/brand-icon/'
+/** Only the bundled icon sizes exist; any other size is a missing asset. */
+const BRAND_ICON_SIZES = new Set(['180', '192', '512'])
 const PAIRING_TTL_MS = 5 * 60 * 1000
 const PIN_TTL_MS = PAIRING_TTL_MS
 const MOBILE_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
@@ -44,9 +85,15 @@ const REMOTE_EVENT_STREAM_ENDPOINT = '$events'
 const REMOTE_EVENT_RESULT_ENDPOINT = '$events/result'
 /** Waterfall event a Host raises when it needs an answer from the user. */
 const USER_QUESTION_EVENT = 'user-questions/request'
+/** Waterfall event a Host raises before a tool runs outside the sandbox. */
+const APPROVAL_REQUEST_EVENT = 'approval/request'
 const EVENT_STREAM_ID = 'mobile-events'
 const WORKSPACE_STREAM_ID = 'mobile-workspaces'
 const MUX_STABLE_MS = 5_000
+/** Tail page size when the phone does not name one. */
+const HISTORY_DEFAULT_MAX_MESSAGES = 100
+/** Match the desktop history window: at least two turns worth of messages. */
+const HISTORY_TURN_WINDOW = { minMessages: 50, minTurns: 2 } as const
 /** Public DNS endpoint whose route selects the machine's primary source address. */
 const DEFAULT_ROUTE_PROBE_HOST = '8.8.8.8'
 const DEFAULT_ROUTE_PROBE_PORT = 53
@@ -61,7 +108,9 @@ const DEFAULT_ROUTE_PROBE_TIMEOUT_MS = 250
  * client-request envelope — but an endpoint is now `<namespace>/<method>` and
  * its payload carries named args rather than a bare object. Several shapes
  * moved too, so each entry owns its own translation instead of a blanket
- * rename.
+ * rename. A Host method that declares one JSON parameter named `request`
+ * receives the payload as `{ request }`; methods with several top-level
+ * parameters (for example `agentPresets/select`) stay flat.
  *
  * The mobile page's vocabulary is deliberately left alone: it is served from
  * this file, but a phone may still be holding an older page.
@@ -81,16 +130,29 @@ const HARNESS_ENDPOINTS: Record<
   // The catalog is no longer per-session: it describes what the Host can route
   // to, so it takes no arguments and the page's sessionId is dropped.
   'session.models': { endpoint: 'session/modelCatalog', args: () => ({}) },
-  'session.selectModel': {
-    endpoint: 'session/selectModel',
-    args: (payload) => ({ request: payload })
-  },
-  'session.create': { endpoint: 'session/create', args: (payload) => ({ request: payload }) },
+  'session.selectModel': { endpoint: 'session/selectModel', args: requestArgs },
+  'session.create': { endpoint: 'session/create', args: requestArgs },
+  'session.rename': { endpoint: 'session/rename', args: requestArgs },
+  'session.search': { endpoint: 'session/search', args: requestArgs },
+  'session.updateQueue': { endpoint: 'session/updateQueue', args: requestArgs },
+  'workspace.archiveSession': { endpoint: 'workspace/archiveSession', args: requestArgs },
+  'workspace.unarchiveSession': { endpoint: 'workspace/unarchiveSession', args: requestArgs },
   'session.prompt': {
     endpoint: 'session/prompt',
     args: (payload) => ({ request: { requestId: randomUUID(), ...payload } })
   },
-  'session.cancel': { endpoint: 'session/cancel', args: (payload) => ({ request: payload }) }
+  'session.cancel': { endpoint: 'session/cancel', args: requestArgs },
+  // The uploader takes the receiving Agent as a separate wire argument. Its
+  // descriptor names the parameter `agent` but wires it as `agentId`, and the
+  // Gateway rejects any key that is not the wire name.
+  'fileUploads.upload': {
+    endpoint: 'fileUploads/upload',
+    args: (payload) => ({ agentId: payload.agent, request: payload.request })
+  }
+}
+
+function requestArgs(payload: Record<string, unknown>): Record<string, unknown> {
+  return { request: payload }
 }
 
 const RPC_ALLOWLIST = new Set([...Object.keys(HARNESS_ENDPOINTS), 'session.history', 'workspace.list'])
@@ -123,9 +185,17 @@ export interface LanMobileBridgeOptions {
   acmeChallengeDir?: () => string | undefined
 }
 
+export interface BrowserDeviceSnapshot {
+  id: string
+  pairedAt: number
+  lastSeenAt: number
+  status: 'active' | 'idle' | 'disconnected'
+}
+
 export interface LanMobileBridgeSnapshot {
   running: boolean
   connected: boolean
+  browserDevices: BrowserDeviceSnapshot[]
   port?: number
   pairingUrl?: string
   expiresAt?: number
@@ -173,10 +243,44 @@ interface PendingMobileQuestion {
   questions: MobileQuestion[]
 }
 
+/**
+ * One outstanding privileged-tool request. Approval is a waterfall, so the
+ * frame stays pending until this phone (or the desktop) settles it; the phone
+ * only ever sees the tool identity and the Host's explanation, never arguments.
+ */
+interface PendingMobileApproval {
+  eventId: string
+  sessionId: string
+  toolName: string
+  callId?: string
+  reason?: string
+  displayReason?: string
+}
+
 interface MobileQuestionAnswer {
   id: string
   selected: string[]
   custom?: string
+}
+
+interface HarnessResult {
+  ok: boolean
+  value?: unknown
+  error?: string
+  code?: string
+  details?: Record<string, unknown>
+  /** Host HTTP status; internal routing evidence, never sent to the page. */
+  httpStatus?: number
+}
+
+class MobileRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string
+  ) {
+    super(message)
+  }
 }
 
 export class LanMobileBridge {
@@ -194,6 +298,12 @@ export class LanMobileBridge {
   /** Sessions moved here only by the settings panel's disconnect. */
   private readonly resumableSessions = new Map<string, MobileSession>()
   private readonly pendingQuestions = new Map<string, PendingMobileQuestion>()
+  /** One pending approval per session: a second request supersedes the first. */
+  private readonly pendingApprovals = new Map<string, PendingMobileApproval>()
+  /** Latest `session/follow` snapshot cursor seen for each session. */
+  private readonly sessionSnapshotCursors = new Map<string, number>()
+  /** Cursor reused by consecutive `beforeSeq` reads so one scroll keeps one view. */
+  private readonly historyThroughSeqs = new Map<string, number>()
   private ephemeralPin?: string
   private ephemeralPinExpiresAt?: number
   private readonly pinFailuresByIp = new Map<string, number[]>()
@@ -273,7 +383,7 @@ export class LanMobileBridge {
     this.sessions.clear()
     this.suspendedSessions.clear()
     this.resumableSessions.clear()
-    this.pendingQuestions.clear()
+    this.clearPendingInteractions()
     this.ephemeralPin = undefined
     this.ephemeralPinExpiresAt = undefined
     this.clearPinFailures()
@@ -460,7 +570,7 @@ export class LanMobileBridge {
 
   snapshot(): LanMobileBridgeSnapshot {
     if (!this.server || !this.port) {
-      return { running: false, connected: this.mobileBrowserOnline() }
+      return { running: false, connected: this.mobileBrowserOnline(), browserDevices: [] }
     }
     // The pairing token is single-use (consumed on approval) and short-lived.
     // Tunnel and listener state must stay visible regardless, otherwise the
@@ -470,6 +580,7 @@ export class LanMobileBridge {
     return {
       running: true,
       connected: this.mobileBrowserOnline(),
+      browserDevices: this.browserDeviceSnapshot(),
       port: this.port,
       ...(tokenValid && pairingUrl ? { pairingUrl, expiresAt: this.pairingExpiresAt } : {}),
       tunnelActive: this.tunnelActive,
@@ -616,6 +727,7 @@ export class LanMobileBridge {
 
   private revokeMobileSessions(): void {
     this.closeSessionStreams()
+    this.clearPendingInteractions()
     this.sessions.clear()
     this.suspendedSessions.clear()
     this.resumableSessions.clear()
@@ -636,6 +748,7 @@ export class LanMobileBridge {
    */
   suspendMobileSessions(): void {
     this.closeSessionStreams()
+    this.clearPendingInteractions()
     for (const [token, session] of this.sessions) {
       this.suspendedSessions.set(token, session)
       this.resumableSessions.set(token, session)
@@ -705,10 +818,7 @@ export class LanMobileBridge {
     response.setHeader('cache-control', 'no-store')
     response.setHeader('x-content-type-options', 'nosniff')
     response.setHeader('referrer-policy', 'no-referrer')
-    response.setHeader(
-      'content-security-policy',
-      "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
-    )
+    response.setHeader('content-security-policy', MOBILE_PAGE_CSP)
     response.setHeader('x-frame-options', 'DENY')
 
     const transportAddress = normalizeRemoteAddress(request.socket.remoteAddress ?? '')
@@ -819,7 +929,8 @@ export class LanMobileBridge {
       }
       let pin = ''
       try {
-        const parsed = JSON.parse(await readBody(request)) as { pin?: unknown }
+        const body = await readBody(request)
+        const parsed = JSON.parse(body.text) as { pin?: unknown }
         pin = typeof parsed.pin === 'string' ? parsed.pin.trim() : ''
       } catch {
         pin = ''
@@ -854,6 +965,16 @@ export class LanMobileBridge {
       }
       return this.text(response, 401, 'Pair your phone again.')
     }
+    if (request.method === 'GET' && url.pathname === '/') {
+      response.setHeader('content-security-policy', MOBILE_MAIN_PAGE_CSP)
+    }
+    if (await serveMobileStatic(request, response)) return
+    if (request.method === 'GET' && url.pathname === '/manifest.webmanifest') {
+      return this.serveWebManifest(response)
+    }
+    if (request.method === 'GET' && url.pathname.startsWith(BRAND_ICON_PREFIX)) {
+      return this.serveBrandIcon(url.pathname.slice(BRAND_ICON_PREFIX.length), response)
+    }
     if (request.method === 'GET' && url.pathname === '/api/status') {
       return this.json(response, 200, {
         connected: true,
@@ -861,8 +982,17 @@ export class LanMobileBridge {
         tunnelExpiresAt: this.tunnelExpiresAt
       })
     }
-    if (request.method === 'GET' && url.pathname === '/') {
-      return this.html(response, renderMobilePage({ locale: this.locale() }))
+    if (request.method === 'GET' && url.pathname === '/api/attachment') {
+      try {
+        this.verifyTrustedOrigin(request)
+      } catch {
+        return this.json(response, 403, {
+          ok: false,
+          code: 'forbidden',
+          error: 'Cross-origin request rejected.'
+        })
+      }
+      return this.serveAttachment(response, url)
     }
     if (request.method === 'GET' && url.pathname === '/api/session/stream') {
       this.verifyTrustedOrigin(request)
@@ -872,7 +1002,47 @@ export class LanMobileBridge {
     }
     if (request.method === 'POST' && url.pathname === '/api/rpc') {
       this.verifySameOrigin(request)
-      const input = JSON.parse(await readBody(request)) as { method?: unknown; payload?: unknown }
+      return this.handleRpc(request, response)
+    }
+    this.text(response, 404, 'Not found.')
+  }
+
+  private async handleRpc(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    let body: Awaited<ReturnType<typeof readBody>>
+    try {
+      body = await readBody(request, MAX_RPC_BODY_BYTES)
+    } catch {
+      return this.json(response, 400, {
+        ok: false,
+        code: 'invalid-request',
+        error: 'Unable to read the request body.'
+      })
+    }
+    if (body.tooLarge) return this.rejectPayloadTooLarge(request, response)
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(body.text)
+    } catch {
+      return this.json(response, 400, {
+        ok: false,
+        code: 'invalid-request',
+        error: 'Request body is not valid JSON.'
+      })
+    }
+    if (!isRecord(parsed)) {
+      return this.json(response, 400, {
+        ok: false,
+        code: 'invalid-request',
+        error: 'Request body must be a JSON object.'
+      })
+    }
+    const input = parsed as { method?: unknown; payload?: unknown }
+    if (body.bytes > rpcBodyLimit(input.method)) {
+      return this.rejectPayloadTooLarge(request, response)
+    }
+
+    try {
       if (input.method === 'interaction.pending') {
         const sessionId = requiredStringField(input.payload, 'sessionId')
         const pending = [...this.pendingQuestions.values()].find(
@@ -888,7 +1058,7 @@ export class LanMobileBridge {
           kind: 'result',
           value: { answers: answer.answers }
         })
-        return this.json(response, result.ok ? 200 : 400, result)
+        return this.json(response, this.rpcStatus(result), this.rpcBody(result))
       }
       if (input.method === 'interaction.cancel') {
         const rpcId = requiredStringField(input.payload, 'rpcId')
@@ -902,15 +1072,189 @@ export class LanMobileBridge {
             code: 'cancelled'
           }
         })
-        return this.json(response, result.ok ? 200 : 400, result)
+        return this.json(response, this.rpcStatus(result), this.rpcBody(result))
+      }
+      if (input.method === 'approval.pending') {
+        const sessionId = requiredStringField(input.payload, 'sessionId')
+        // The approval map is cleared on every disconnect; the client-id guard
+        // closes the gap between the carrier opening and its `ready` frame.
+        const approval = this.eventClientId === undefined
+          ? undefined
+          : this.pendingApprovals.get(sessionId)
+        return this.json(response, 200, { ok: true, value: { approval: approval ?? null } })
+      }
+      if (input.method === 'approval.answer') {
+        const sessionId = requiredStringField(input.payload, 'sessionId')
+        const eventId = requiredStringField(input.payload, 'eventId')
+        const outcome = isRecord(input.payload) ? input.payload.outcome : undefined
+        if (outcome !== 'allowed-once' && outcome !== 'rejected') {
+          throw new MobileRequestError(
+            400,
+            'invalid-outcome',
+            'Approval outcome must be allowed-once or rejected.'
+          )
+        }
+        const pending = this.eventClientId === undefined
+          ? undefined
+          : this.pendingApprovals.get(sessionId)
+        if (!pending || pending.eventId !== eventId) {
+          throw new MobileRequestError(
+            409,
+            'approval-not-pending',
+            'This approval request is no longer pending.'
+          )
+        }
+        const result = await this.respondToApproval(sessionId, eventId, outcome)
+        if (!result.ok) return this.json(response, this.rpcStatus(result), this.rpcBody(result))
+        return this.json(response, 200, { ok: true, value: { ok: true } })
       }
       if (typeof input.method !== 'string' || !RPC_ALLOWLIST.has(input.method)) {
         return this.json(response, 403, { ok: false, error: 'RPC method is not available on mobile.' })
       }
-      const result = await this.forwardRpc(input.method, input.payload ?? {})
-      return this.json(response, result.ok ? 200 : 400, result)
+      const payload = validateRpcPayload(input.method, input.payload)
+      const result = await this.forwardRpc(input.method, payload)
+      return this.json(response, this.rpcStatus(result), this.rpcBody(result))
+    } catch (error) {
+      if (error instanceof MobileRequestError) {
+        return this.json(response, error.status, {
+          ok: false,
+          code: error.code,
+          error: error.message
+        })
+      }
+      throw error
     }
-    this.text(response, 404, 'Not found.')
+  }
+
+  private async serveAttachment(response: ServerResponse, url: URL): Promise<void> {
+    const sessionId = url.searchParams.get('sessionId')
+    const attachmentId = url.searchParams.get('attachmentId')
+    if (!sessionId || !attachmentId) {
+      return this.json(response, 400, {
+        ok: false,
+        code: 'invalid-request',
+        error: 'sessionId and attachmentId are required.'
+      })
+    }
+
+    const result = await this.invokeHarness('session/attachment', {
+      request: { sessionId, attachmentId }
+    })
+    if (!result.ok) {
+      const status = this.attachmentFailureStatus(result)
+      return this.json(response, status, {
+        ok: false,
+        code: status === 404 && result.code === 'harness-unavailable'
+          ? 'attachment-not-found'
+          : result.code ?? (status === 404 ? 'attachment-not-found' : 'harness-unavailable'),
+        error: result.error ?? (status === 404 ? 'Attachment not found.' : 'Harness is not available.'),
+        ...(result.details ? { details: result.details } : {})
+      })
+    }
+
+    const value = result.value
+    const attachment = isRecord(value) ? value.attachment : undefined
+    const mediaType = isRecord(attachment) ? attachment.mediaType : undefined
+    const data = isRecord(value) ? value.data : undefined
+    const bytes = typeof data === 'string' ? decodeCanonicalBase64(data) : undefined
+    if (
+      typeof mediaType !== 'string' ||
+      !IMAGE_MEDIA_TYPES.has(mediaType) ||
+      bytes === undefined ||
+      bytes.length === 0 ||
+      bytes.length > MAX_IMAGE_BYTES
+    ) {
+      return this.json(response, 502, {
+        ok: false,
+        code: 'harness-unavailable',
+        error: 'Harness returned an invalid attachment.'
+      })
+    }
+
+    if (response.destroyed) return
+    response.statusCode = 200
+    response.setHeader('content-type', mediaType)
+    response.setHeader('content-length', String(bytes.length))
+    response.setHeader('etag', `"${attachmentId}"`)
+    response.setHeader('cache-control', 'private, max-age=3600')
+    response.setHeader('x-content-type-options', 'nosniff')
+    response.end(bytes)
+  }
+
+  /** Declares the installable phone entry; without brand assets the icon set is absent too. */
+  private serveWebManifest(response: ServerResponse): void {
+    if (!this.options.brandLogoPaths) return this.text(response, 404, 'Brand asset not found.')
+    if (response.destroyed) return
+    response.statusCode = 200
+    response.setHeader('content-type', 'application/manifest+json')
+    response.end(JSON.stringify(MOBILE_WEB_MANIFEST))
+  }
+
+  /** One bundled home-screen icon, read from the directory holding the brand logos. */
+  private async serveBrandIcon(size: string, response: ServerResponse): Promise<void> {
+    const logoPath = this.options.brandLogoPaths?.light
+    if (!logoPath || !BRAND_ICON_SIZES.has(size)) return this.text(response, 404, 'Brand asset not found.')
+    let body: Buffer
+    try {
+      body = await readFile(join(dirname(logoPath), `icon-${size}.png`))
+    } catch {
+      return this.text(response, 404, 'Brand asset not found.')
+    }
+    if (response.destroyed) return
+    response.statusCode = 200
+    response.setHeader('content-type', 'image/png')
+    response.setHeader('content-length', String(body.length))
+    response.setHeader('cache-control', 'public, max-age=86400')
+    response.setHeader('x-content-type-options', 'nosniff')
+    response.end(body)
+  }
+
+  private attachmentFailureStatus(result: HarnessResult): number {
+    if (result.httpStatus === 404) return 404
+    if (result.code === 'session/not-found' || result.code === 'session/attachment-invalid') {
+      return 404
+    }
+    if (typeof result.error === 'string' && /not found|not referenced|does not exist/i.test(result.error)) {
+      return 404
+    }
+    return 502
+  }
+
+  private rpcStatus(result: HarnessResult): number {
+    if (result.ok) return 200
+    return result.code === 'harness-unavailable' ? 502 : 400
+  }
+
+  private rpcBody(result: HarnessResult): Record<string, unknown> {
+    if (result.ok) return { ok: true, value: result.value }
+    return {
+      ok: false,
+      error: result.error ?? 'Harness rejected the request.',
+      ...(result.code ? { code: result.code } : {}),
+      ...(result.details ? { details: result.details } : {})
+    }
+  }
+
+  private rejectPayloadTooLarge(request: IncomingMessage, response: ServerResponse): void {
+    if (response.destroyed) return
+    let sent = false
+    const send = (): void => {
+      if (sent || response.destroyed) return
+      sent = true
+      response.shouldKeepAlive = false
+      response.setHeader('connection', 'close')
+      this.json(response, 413, PAYLOAD_TOO_LARGE)
+      response.once('finish', () => request.destroy())
+    }
+    if (request.complete) {
+      send()
+      return
+    }
+    // Answering while the client is still uploading makes fetch surface a
+    // reset instead of the 413, so drain the rest of the request body first.
+    request.resume()
+    request.once('end', send)
+    request.once('close', send)
   }
 
   private locale(): 'en' | 'zh' {
@@ -970,6 +1314,26 @@ export class LanMobileBridge {
     return [...this.sessions.values()].some(
       (session) => this.sessionUsable(session) && now - (session.lastSeenAt ?? session.pairedAt) < 30_000
     )
+  }
+
+  private browserDeviceSnapshot(): BrowserDeviceSnapshot[] {
+    const now = this.now()
+    const devices: BrowserDeviceSnapshot[] = []
+    const add = (sessions: Map<string, MobileSession>, disconnected: boolean) => {
+      for (const [token, session] of sessions) {
+        if (!this.sessionUsable(session)) continue
+        const lastSeenAt = session.lastSeenAt ?? session.pairedAt
+        devices.push({
+          id: createHash('sha256').update(token).digest('hex').slice(0, 8),
+          pairedAt: session.pairedAt,
+          lastSeenAt,
+          status: disconnected ? 'disconnected' : now - lastSeenAt < 30_000 ? 'active' : 'idle'
+        })
+      }
+    }
+    add(this.sessions, false)
+    add(this.suspendedSessions, true)
+    return devices.sort((left, right) => right.lastSeenAt - left.lastSeenAt)
   }
 
   private sessionUsable(session: MobileSession): boolean {
@@ -1110,11 +1474,11 @@ export class LanMobileBridge {
    *
    * `session.history` is the one call the page cannot express directly: the
    * Host replaced open-ended history reads with a cursor-bounded page, and
-   * refuses a `throughSeq` past the session's own cursor. The cursor lives on
-   * the session list row, so the read is two calls here rather than a
-   * protocol the page has to learn.
+   * refuses a `throughSeq` past the session's own cursor. The cursor is the
+   * opening `session/follow` snapshot cursor, so a tail read and every earlier
+   * page that follows it stay inside one stable view of the same session.
    */
-  private async forwardRpc(method: string, payload: unknown): Promise<{ ok: boolean; value?: unknown; error?: string }> {
+  private async forwardRpc(method: string, payload: unknown): Promise<HarnessResult> {
     const fields = typeof payload === 'object' && payload !== null
       ? payload as Record<string, unknown>
       : {}
@@ -1131,6 +1495,23 @@ export class LanMobileBridge {
 
     if (method === 'session.history') {
       const sessionId = fields.sessionId
+      if (typeof sessionId !== 'string' || !sessionId) {
+        return { ok: false, error: 'Invalid sessionId.' }
+      }
+      const beforeSeq = fields.beforeSeq
+      if (
+        beforeSeq !== undefined &&
+        (!Number.isSafeInteger(beforeSeq) || (beforeSeq as number) < 0)
+      ) {
+        return { ok: false, error: 'Invalid beforeSeq.' }
+      }
+      const maxMessages = fields.maxMessages === undefined
+        ? HISTORY_DEFAULT_MAX_MESSAGES
+        : Number.isSafeInteger(fields.maxMessages) && (fields.maxMessages as number) > 0
+          ? fields.maxMessages as number
+          : undefined
+      if (maxMessages === undefined) return { ok: false, error: 'Invalid maxMessages.' }
+
       const listed = await this.invokeHarness('session/list', { _request: {} })
       if (!listed.ok) return listed
       const items = (listed.value as {
@@ -1141,13 +1522,28 @@ export class LanMobileBridge {
       }).items ?? []
       const row = items.find((item) => item.sessionId === sessionId)
       const projections = row?.projections
-      const throughSeq = projections?.asOfSeq
-      if (typeof throughSeq !== 'number') return { ok: false, error: 'Harness has no cursor for this session.' }
+      const snapshotCursor = this.sessionSnapshotCursors.get(sessionId)
+      const listedCursor = projections?.asOfSeq
+      const initialCursor = typeof snapshotCursor === 'number' ? snapshotCursor : listedCursor
+      if (typeof initialCursor !== 'number') {
+        return { ok: false, error: 'Harness has no cursor for this session.' }
+      }
+      // A backwards page must stay bounded to the cursor the tail page was
+      // read from. Reusing that pinned cursor keeps consecutive scroll pages
+      // contiguous; a new follow snapshot re-pins the next scroll.
+      const throughSeq = beforeSeq === undefined
+        ? initialCursor
+        : this.historyThroughSeqs.get(sessionId) ?? initialCursor
+      this.historyThroughSeqs.set(sessionId, throughSeq)
+
       const page = await this.invokeHarness('session/page', {
         request: {
           address: { kind: 'session', sessionId },
           throughSeq,
-          ...(typeof fields.maxMessages === 'number' ? { maxMessages: fields.maxMessages } : {})
+          maxMessages,
+          ...(beforeSeq === undefined
+            ? {}
+            : { beforeSeq, turnWindow: HISTORY_TURN_WINDOW })
         }
       })
       if (!page.ok) return page
@@ -1163,7 +1559,9 @@ export class LanMobileBridge {
         value: {
           events: value.records,
           projections,
-          hasMore: value.hasMore === true
+          hasMore: value.hasMore === true,
+          oldestSeq: oldestEventSeq(value.records),
+          throughSeq
         }
       }
     }
@@ -1176,39 +1574,85 @@ export class LanMobileBridge {
   private async invokeHarness(
     endpoint: string,
     args: Record<string, unknown>
-  ): Promise<{ ok: boolean; value?: unknown; error?: string }> {
-    const base = this.options.harnessUrl()
-    if (!base) return { ok: false, error: 'Harness is not ready.' }
-    const rpcId = randomUUID()
-    const response = await this.harnessFetch(new URL(`/api/${endpoint}`, base), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload: { args } }),
-      signal: AbortSignal.timeout(30_000)
-    }, base)
-    if (!response.ok) return { ok: false, error: `Harness transport returned HTTP ${response.status}.` }
-    const envelope = (await response.json()) as {
-      rpcId?: unknown
-      result?: { ok?: unknown; value?: unknown; error?: { message?: unknown } }
+  ): Promise<HarnessResult> {
+    const unavailable = (): HarnessResult => ({
+      ok: false,
+      code: 'harness-unavailable',
+      error: 'Harness is not available.'
+    })
+    let base: string | undefined
+    try {
+      base = this.options.harnessUrl()
+    } catch {
+      return unavailable()
     }
-    if (envelope.rpcId !== rpcId) return { ok: false, error: 'Harness RPC response did not match the request.' }
+    if (!base) return unavailable()
+
+    const rpcId = randomUUID()
+    let response: Response
+    try {
+      response = await this.harnessFetch(new URL(`/api/${endpoint}`, base), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload: { args } }),
+        signal: AbortSignal.timeout(30_000)
+      }, base)
+    } catch {
+      return unavailable()
+    }
+    if (!response.ok) {
+      return {
+        ...unavailable(),
+        error: `Harness transport returned HTTP ${response.status}.`,
+        httpStatus: response.status
+      }
+    }
+
+    let envelope: {
+      rpcId?: unknown
+      result?: {
+        ok?: unknown
+        value?: unknown
+        error?: { code?: unknown; message?: unknown; details?: unknown }
+      }
+    }
+    try {
+      envelope = (await response.json()) as typeof envelope
+    } catch {
+      return { ...unavailable(), error: 'Harness returned an invalid response.' }
+    }
+    if (envelope.rpcId !== rpcId) {
+      return { ...unavailable(), error: 'Harness RPC response did not match the request.' }
+    }
     if (envelope.result?.ok !== true) {
-      const message = envelope.result?.error?.message
-      return { ok: false, error: typeof message === 'string' ? message : 'Harness rejected the request.' }
+      const failure = envelope.result?.error
+      const details = isRecord(failure?.details) ? failure.details : undefined
+      return {
+        ok: false,
+        error: typeof failure?.message === 'string'
+          ? failure.message
+          : 'Harness rejected the request.',
+        ...(typeof failure?.code === 'string' ? { code: failure.code } : {}),
+        ...(details ? { details } : {})
+      }
     }
     return { ok: true, value: envelope.result.value }
   }
 
   /**
    * Reconciles everything that depends on a phone being attached. The mux
-   * downlink exists purely to track questions raised for a mobile client, so
-   * running it with no client meant reconnecting twice a second, forever, on
-   * every installation that never used the feature.
+   * downlink exists purely to track questions and approval requests raised for
+   * a mobile client, so running it with no client meant reconnecting twice a
+   * second, forever, on every installation that never used the feature.
    */
   private syncConnected(): void {
     const connected = this.mobileBrowserOnline()
-    if (connected) this.startMuxMonitor()
-    else this.muxAbort?.abort()
+    if (connected) {
+      this.startMuxMonitor()
+    } else {
+      this.muxAbort?.abort()
+      this.clearPendingInteractions()
+    }
     if (connected === this.lastConnected) return
     this.lastConnected = connected
     // Reconciliation runs off the request path, so a throwing observer must not
@@ -1246,12 +1690,12 @@ export class LanMobileBridge {
     while (!signal.aborted) {
       const base = this.options.harnessUrl()
       if (!base) {
-        this.pendingQuestions.clear()
+        this.clearPendingInteractions()
         await backOff()
         continue
       }
       if (base !== lastBase) {
-        this.pendingQuestions.clear()
+        this.clearPendingInteractions()
         lastBase = base
         backoffMs = MUX_RECONNECT_MS
       }
@@ -1263,7 +1707,7 @@ export class LanMobileBridge {
         backoffMs = MUX_RECONNECT_MS
       } catch {
         if (signal.aborted) return
-        this.pendingQuestions.clear()
+        this.clearPendingInteractions()
         // A connection that held for a while and then dropped is a transient
         // fault, not a Harness that refuses the downlink: retry promptly.
         if (openedAt !== undefined && this.now() - openedAt >= MUX_STABLE_MS) {
@@ -1318,7 +1762,7 @@ export class LanMobileBridge {
       const handleAbort = (): void => finish()
       const handleOpen = (): void => {
         onOpen?.()
-        this.pendingQuestions.clear()
+        this.clearPendingInteractions()
         this.eventClientId = undefined
         // Two logical streams share this carrier: the forwarded events that
         // raise questions, and the workspace projection whose opening
@@ -1420,7 +1864,10 @@ export class LanMobileBridge {
           endpoint: 'session/follow',
           payload: {
             args: {
-              request: { address: { kind: 'session', sessionId }, maxMessages: 100 }
+              request: {
+                address: { kind: 'session', sessionId },
+                maxMessages: HISTORY_DEFAULT_MAX_MESSAGES
+              }
             }
           }
         }))
@@ -1435,8 +1882,13 @@ export class LanMobileBridge {
         if (!isRecord(frame) || frame.streamId !== streamId) return
         if (frame.type === 'item') {
           const value = frame.value
-          const eventName = isRecord(value) && value.type === 'snapshot' ? 'snapshot' : 'event'
-          response.write(`event: ${eventName}\ndata: ${JSON.stringify(value)}\n\n`)
+          const snapshot = isRecord(value) && value.type === 'snapshot'
+          if (snapshot && typeof value.cursor === 'number') {
+            // The tail page and every earlier page quote this cursor, so the
+            // phone never asks for records past the snapshot it is showing.
+            this.sessionSnapshotCursors.set(sessionId, value.cursor)
+          }
+          response.write(`event: ${snapshot ? 'snapshot' : 'event'}\ndata: ${JSON.stringify(value)}\n\n`)
         } else if (frame.type === 'error' || frame.type === 'end') {
           finish()
         }
@@ -1458,9 +1910,10 @@ export class LanMobileBridge {
    *
    * Every logical stream shares this socket, so a frame is routed by its
    * `streamId` first. The event stream replaces the old `server-request`
-   * envelopes: a question now arrives as a `waterfall` frame carrying its own
-   * `eventId`, which is also the id the phone answers with, and the opening
-   * `ready` frame names the generation every answer has to quote.
+   * envelopes: a question or approval now arrives as a `waterfall` frame
+   * carrying its own `eventId`, which is also the id the phone answers with,
+   * and the opening `ready` frame names the generation every answer has to
+   * quote.
    */
   private consumeMuxEnvelope(data: string): void {
     let frame: unknown
@@ -1496,8 +1949,39 @@ export class LanMobileBridge {
       if (pending) this.pendingQuestions.set(eventId, pending)
       return
     }
+    if (value.type === 'waterfall' && value.event === APPROVAL_REQUEST_EVENT) {
+      const eventId = typeof value.eventId === 'string' ? value.eventId : undefined
+      const request = isRecord(value.request) ? value.request : undefined
+      const agentId = typeof value.agentId === 'string' ? value.agentId : undefined
+      if (!eventId || !request || !agentId) return
+      // Approval events carry the same Agent identity as questions: for a
+      // top-level session it is the session id the phone is looking at. A
+      // second request replaces the first because the Host allows one open
+      // approval per session.
+      const pending = parsePendingApproval(eventId, agentId, request)
+      if (pending) this.pendingApprovals.set(pending.sessionId, pending)
+      return
+    }
     if (value.type === 'cancel' && typeof value.eventId === 'string') {
-      this.pendingQuestions.delete(value.eventId)
+      this.forgetPendingEvent(value.eventId)
+    }
+  }
+
+  /**
+   * Questions and approvals both live only as long as the forward-event stream
+   * that raised them. Dropping both together keeps a reconnect from offering an
+   * answer the Host can no longer accept.
+   */
+  private clearPendingInteractions(): void {
+    this.pendingQuestions.clear()
+    this.pendingApprovals.clear()
+  }
+
+  /** A `cancel` frame settles by event id, whichever card it belonged to. */
+  private forgetPendingEvent(eventId: string): void {
+    this.pendingQuestions.delete(eventId)
+    for (const [sessionId, approval] of this.pendingApprovals) {
+      if (approval.eventId === eventId) this.pendingApprovals.delete(sessionId)
     }
   }
 
@@ -1510,25 +1994,44 @@ export class LanMobileBridge {
   }
 
   /**
-   * Settle one forwarded question.
+   * Settle one forwarded event.
    *
    * `/api/respond` went with the ApiProxy. A forwarded event is now settled
    * through the Gateway's own unary endpoint, which pairs the event with the
    * client generation that received it — so an answer sent after a reconnect
-   * is refused rather than applied to a stale question.
+   * is refused rather than applied to a stale event.
    */
-  private async respondToQuestion(
+  private async settleForwardedEvent(
     eventId: string,
     outcome: Record<string, unknown>
-  ): Promise<{ ok: boolean; value?: unknown; error?: string }> {
+  ): Promise<HarnessResult> {
     const clientId = this.eventClientId
     if (clientId === undefined) return { ok: false, error: 'Harness event stream is not connected.' }
-    const settled = await this.invokeHarness(REMOTE_EVENT_RESULT_ENDPOINT, {
+    return this.invokeHarness(REMOTE_EVENT_RESULT_ENDPOINT, {
       clientId,
       eventId,
       outcome
     })
+  }
+
+  private async respondToQuestion(
+    eventId: string,
+    outcome: Record<string, unknown>
+  ): Promise<HarnessResult> {
+    const settled = await this.settleForwardedEvent(eventId, outcome)
     if (settled.ok) this.pendingQuestions.delete(eventId)
+    return settled
+  }
+
+  private async respondToApproval(
+    sessionId: string,
+    eventId: string,
+    outcome: 'allowed-once' | 'rejected'
+  ): Promise<HarnessResult> {
+    const settled = await this.settleForwardedEvent(eventId, { kind: 'result', value: outcome })
+    if (settled.ok && this.pendingApprovals.get(sessionId)?.eventId === eventId) {
+      this.pendingApprovals.delete(sessionId)
+    }
     return settled
   }
 
@@ -1713,16 +2216,322 @@ export function isPrivateAddress(address: string): boolean {
   return /^f[cd][0-9a-f]{2}:/i.test(address) || /^fe8[0-9a-f]:/i.test(address)
 }
 
-async function readBody(request: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = []
-  let bytes = 0
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-    bytes += buffer.length
-    if (bytes > MAX_BODY_BYTES) throw new Error('Request body is too large.')
-    chunks.push(buffer)
+interface RequestBody {
+  text: string
+  bytes: number
+  tooLarge: boolean
+}
+
+function validateRpcPayload(method: string, value: unknown): Record<string, unknown> {
+  switch (method) {
+    case 'session.prompt':
+      return validatePromptPayload(value)
+    case 'session.rename':
+      return validateRenamePayload(value)
+    case 'session.search':
+      return validateSearchPayload(value)
+    case 'session.updateQueue':
+      return validateUpdateQueuePayload(value)
+    case 'workspace.archiveSession':
+      return validateArchiveSessionPayload(value)
+    case 'workspace.unarchiveSession':
+      return validateSessionIdPayload(value)
+    case 'fileUploads.upload':
+      return validateFileUploadPayload(value)
+    default:
+      return isRecord(value) ? value : {}
   }
-  return Buffer.concat(chunks).toString('utf8')
+}
+
+function rpcBodyLimit(method: unknown): number {
+  if (method === 'session.prompt') return MAX_PROMPT_BODY_BYTES
+  if (method === 'fileUploads.upload') return MAX_UPLOAD_BODY_BYTES
+  return MAX_BODY_BYTES
+}
+
+function validatePromptPayload(value: unknown): Record<string, unknown> {
+  if (!isRecord(value) || !Array.isArray(value.content) || value.content.length === 0) {
+    throw new MobileRequestError(400, 'invalid-content', '消息内容格式不正确。')
+  }
+  const content = value.content
+  if (content.length > MAX_PROMPT_BLOCKS) {
+    throw new MobileRequestError(400, 'invalid-content', '一条消息最多包含 10 个内容块。')
+  }
+
+  let attachmentCount = 0
+  let imageBytes = 0
+  let textBytes = 0
+  const normalized: unknown[] = []
+  for (const block of content) {
+    if (!isRecord(block)) {
+      throw new MobileRequestError(400, 'invalid-content', '消息内容格式不正确。')
+    }
+    if (block.type === 'text') {
+      if (typeof block.text !== 'string') {
+        throw new MobileRequestError(400, 'invalid-content', '消息内容格式不正确。')
+      }
+      textBytes += Buffer.byteLength(block.text, 'utf8')
+      if (textBytes > MAX_PROMPT_TEXT_BYTES) {
+        throw new MobileRequestError(400, 'text-too-large', '文字内容不能超过 32KB。')
+      }
+      normalized.push(block)
+      continue
+    }
+    if (block.type === 'file') {
+      attachmentCount += 1
+      if (attachmentCount > MAX_PROMPT_ATTACHMENTS) {
+        throw new MobileRequestError(400, 'too-many-files', '图片和文件合计最多 6 个。')
+      }
+      const receiptId = block.receiptId
+      if (typeof receiptId !== 'string' || !receiptId.trim()) {
+        throw new MobileRequestError(400, 'invalid-file-data', '文件收据无效，请重新上传。')
+      }
+      normalized.push({ type: 'file', receiptId })
+      continue
+    }
+    if (block.type !== 'image') {
+      normalized.push(block)
+      continue
+    }
+
+    attachmentCount += 1
+    if (attachmentCount > MAX_PROMPT_ATTACHMENTS) {
+      throw new MobileRequestError(400, 'too-many-images', '图片和文件合计最多 6 个。')
+    }
+    const mediaType = block.mediaType
+    if (typeof mediaType !== 'string' || !IMAGE_MEDIA_TYPES.has(mediaType)) {
+      throw new MobileRequestError(400, 'unsupported-image', '只支持 PNG / JPEG / WebP / GIF')
+    }
+    const data = block.data
+    if (typeof data !== 'string' || data.length === 0) {
+      throw new MobileRequestError(400, 'invalid-image-data', '图片数据损坏，请重新选择')
+    }
+    if (data.length > MAX_IMAGE_BASE64_LENGTH) {
+      throw new MobileRequestError(413, 'payload-too-large', PAYLOAD_TOO_LARGE.error)
+    }
+    const decoded = decodeCanonicalBase64(data)
+    if (decoded === undefined) {
+      throw new MobileRequestError(400, 'invalid-image-data', '图片数据损坏，请重新选择')
+    }
+    if (decoded.length > MAX_IMAGE_BYTES) {
+      throw new MobileRequestError(413, 'payload-too-large', PAYLOAD_TOO_LARGE.error)
+    }
+    imageBytes += decoded.length
+    if (imageBytes > MAX_IMAGE_TOTAL_BYTES) {
+      throw new MobileRequestError(413, 'payload-too-large', PAYLOAD_TOO_LARGE.error)
+    }
+
+    const image = { ...block }
+    if (block.name !== undefined) {
+      if (typeof block.name !== 'string') {
+        throw new MobileRequestError(400, 'invalid-image-data', '图片名称格式不正确。')
+      }
+      const name = sanitizeDisplayName(block.name)
+      if (name === undefined) delete image.name
+      else image.name = name
+    }
+    normalized.push(image)
+  }
+  return { ...value, content: normalized }
+}
+
+function requiredSessionId(value: unknown): string {
+  if (!isRecord(value) || typeof value.sessionId !== 'string' || !value.sessionId.trim()) {
+    throw new MobileRequestError(400, 'invalid-session', '会话标识无效。')
+  }
+  return value.sessionId
+}
+
+function validateRenamePayload(value: unknown): Record<string, unknown> {
+  const sessionId = requiredSessionId(value)
+  const title = isRecord(value) && typeof value.title === 'string' ? value.title.trim() : ''
+  if (!title) {
+    throw new MobileRequestError(400, 'invalid-title', '会话标题不能为空。')
+  }
+  if ([...title].length > MAX_RENAME_TITLE_LENGTH) {
+    throw new MobileRequestError(400, 'invalid-title', '会话标题不能超过 200 个字符。')
+  }
+  return { sessionId, title }
+}
+
+function validateSearchPayload(value: unknown): Record<string, unknown> {
+  const query = isRecord(value) && typeof value.query === 'string' ? value.query.trim() : ''
+  if (!query) {
+    throw new MobileRequestError(400, 'invalid-query', '搜索关键词不能为空。')
+  }
+  return { query }
+}
+
+function validateArchiveSessionPayload(value: unknown): Record<string, unknown> {
+  const sessionId = requiredSessionId(value)
+  const stopActivity = isRecord(value) ? value.stopActivity : undefined
+  if (stopActivity !== undefined && typeof stopActivity !== 'boolean') {
+    throw new MobileRequestError(400, 'invalid-request', 'stopActivity 必须是布尔值。')
+  }
+  return stopActivity === true ? { sessionId, stopActivity: true } : { sessionId }
+}
+
+function validateSessionIdPayload(value: unknown): Record<string, unknown> {
+  return { sessionId: requiredSessionId(value) }
+}
+
+function validateUpdateQueuePayload(value: unknown): Record<string, unknown> {
+  const sessionId = requiredSessionId(value)
+  const itemId = isRecord(value) && typeof value.itemId === 'string' ? value.itemId : ''
+  if (!itemId.trim()) {
+    throw new MobileRequestError(400, 'invalid-action', '队列项标识无效。')
+  }
+  const action = isRecord(value) ? value.action : undefined
+  if (!isRecord(action)) {
+    throw new MobileRequestError(400, 'invalid-action', '队列操作格式不正确。')
+  }
+  if (action.kind === 'remove') {
+    return { sessionId, itemId, action: { kind: 'remove' } }
+  }
+  if (action.kind === 'steer') {
+    return { sessionId, itemId, action: { kind: 'steer' } }
+  }
+  if (action.kind !== 'edit') {
+    throw new MobileRequestError(400, 'invalid-action', '队列操作格式不正确。')
+  }
+  if (
+    !Array.isArray(action.content) ||
+    action.content.length === 0 ||
+    action.content.length > MAX_PROMPT_BLOCKS
+  ) {
+    throw new MobileRequestError(400, 'invalid-action', '队列编辑必须是 1 到 10 个文本块。')
+  }
+  let textBytes = 0
+  let hasText = false
+  const content: { type: 'text'; text: string }[] = []
+  for (const block of action.content) {
+    if (!isRecord(block) || block.type !== 'text' || typeof block.text !== 'string') {
+      throw new MobileRequestError(400, 'invalid-action', '队列编辑只接受文本内容。')
+    }
+    textBytes += Buffer.byteLength(block.text, 'utf8')
+    if (textBytes > MAX_PROMPT_TEXT_BYTES) {
+      throw new MobileRequestError(400, 'text-too-large', '队列编辑文字不能超过 32KB。')
+    }
+    if (block.text.trim()) hasText = true
+    content.push({ type: 'text', text: block.text })
+  }
+  if (!hasText) {
+    throw new MobileRequestError(400, 'invalid-action', '队列编辑内容不能为空。')
+  }
+  return { sessionId, itemId, action: { kind: 'edit', content } }
+}
+
+function validateFileUploadPayload(value: unknown): Record<string, unknown> {
+  const agent = isRecord(value) && typeof value.agent === 'string' ? value.agent : ''
+  if (!agent.trim()) {
+    throw new MobileRequestError(400, 'invalid-session', '会话标识无效。')
+  }
+  const request = isRecord(value) ? value.request : undefined
+  if (!isRecord(request)) {
+    throw new MobileRequestError(400, 'invalid-file-data', '文件数据无效，请重新选择。')
+  }
+  const data = request.data
+  if (typeof data !== 'string' || data.length === 0) {
+    throw new MobileRequestError(400, 'invalid-file-data', '文件数据无效，请重新选择。')
+  }
+  if (data.length > MAX_UPLOAD_BASE64_LENGTH) {
+    throw new MobileRequestError(413, 'payload-too-large', '文件太大，最大 20MB。')
+  }
+  const bytes = decodeCanonicalBase64(data)
+  if (bytes === undefined) {
+    throw new MobileRequestError(400, 'invalid-file-data', '文件数据不是规范的 base64。')
+  }
+  if (bytes.length > MAX_UPLOAD_BYTES) {
+    throw new MobileRequestError(413, 'payload-too-large', '文件太大，最大 20MB。')
+  }
+  let name: string | undefined
+  if (request.name !== undefined) {
+    if (typeof request.name !== 'string') {
+      throw new MobileRequestError(400, 'invalid-file-name', '文件名格式不正确。')
+    }
+    name = sanitizeDisplayName(request.name)
+    if (name === undefined) {
+      throw new MobileRequestError(400, 'invalid-file-name', '文件名格式不正确。')
+    }
+  }
+  return { agent, request: { data, ...(name === undefined ? {} : { name }) } }
+}
+
+function decodeCanonicalBase64(value: string): Buffer | undefined {
+  if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return undefined
+  const decoded = Buffer.from(value, 'base64')
+  if (decoded.length === 0 || decoded.toString('base64') !== value) return undefined
+  return decoded
+}
+
+function sanitizeDisplayName(value: string): string | undefined {
+  const cleaned = value
+    .replace(/[/\\]/g, '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim()
+  const name = [...cleaned].slice(0, MAX_DISPLAY_NAME_LENGTH).join('')
+  return name || undefined
+}
+
+function readBody(request: IncomingMessage, limit = MAX_BODY_BYTES): Promise<RequestBody> {
+  const declared = Number(request.headers['content-length'])
+  if (Number.isFinite(declared) && declared > limit) {
+    return Promise.resolve({ text: '', bytes: declared, tooLarge: true })
+  }
+
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let bytes = 0
+    let settled = false
+
+    const cleanup = (): void => {
+      request.off('data', onData)
+      request.off('end', onEnd)
+      request.off('error', onError)
+      request.off('aborted', onAborted)
+      request.off('close', onClose)
+    }
+    const finish = (body: RequestBody): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(body)
+    }
+    const fail = (error: Error): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    function onData(chunk: Buffer | string): void {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      bytes += buffer.length
+      if (bytes > limit) {
+        request.pause()
+        finish({ text: '', bytes, tooLarge: true })
+        return
+      }
+      chunks.push(buffer)
+    }
+    function onEnd(): void {
+      finish({ text: Buffer.concat(chunks).toString('utf8'), bytes, tooLarge: false })
+    }
+    function onError(error: Error): void {
+      fail(error)
+    }
+    function onAborted(): void {
+      fail(new Error('Request aborted.'))
+    }
+    function onClose(): void {
+      if (!settled) fail(new Error('Request closed before the body finished.'))
+    }
+
+    request.on('data', onData)
+    request.once('end', onEnd)
+    request.once('error', onError)
+    request.once('aborted', onAborted)
+    request.once('close', onClose)
+  })
 }
 
 function requestHostname(value: string | string[] | undefined): string {
@@ -1821,6 +2630,17 @@ function requiredStringField(value: unknown, field: string): string {
   return value[field]
 }
 
+/** Earliest durable sequence visible on one page; `null` for an empty page. */
+function oldestEventSeq(records: unknown[]): number | null {
+  let oldest: number | undefined
+  for (const record of records) {
+    const event = isRecord(record) && isRecord(record.event) ? record.event : undefined
+    if (!event || typeof event.seq !== 'number') continue
+    oldest = oldest === undefined ? event.seq : Math.min(oldest, event.seq)
+  }
+  return oldest ?? null
+}
+
 function parsePendingQuestion(
   rpcId: string,
   payload: Record<string, unknown>
@@ -1847,6 +2667,24 @@ function parsePendingQuestion(
   }
   if (!questions.length) return undefined
   return { rpcId, sessionId: payload.sessionId, questions }
+}
+
+function parsePendingApproval(
+  eventId: string,
+  sessionId: string,
+  request: Record<string, unknown>
+): PendingMobileApproval | undefined {
+  if (typeof request.toolName !== 'string' || !request.toolName) return undefined
+  return {
+    eventId,
+    sessionId,
+    toolName: request.toolName,
+    ...(typeof request.callId === 'string' && request.callId ? { callId: request.callId } : {}),
+    ...(typeof request.reason === 'string' && request.reason ? { reason: request.reason } : {}),
+    ...(typeof request.displayReason === 'string' && request.displayReason
+      ? { displayReason: request.displayReason }
+      : {})
+  }
 }
 
 function parseQuestionResponse(value: unknown): {

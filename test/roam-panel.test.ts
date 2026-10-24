@@ -103,6 +103,7 @@ function idleState() {
     lanUrls: [],
     connected: false,
     browserConnected: false,
+    browserDevices: [],
     tunnelActive: false,
     tunnelLoading: false,
     tunnelProvider: null,
@@ -171,6 +172,7 @@ describe('browser-only phone panel', () => {
     const panel = render(statePayload())
     expect(cardsOf(panel).map((element) => element.props['data-card'])).toEqual([
       'connect',
+      'devices',
       'public',
       'help',
       'diagnostics',
@@ -179,6 +181,61 @@ describe('browser-only phone panel', () => {
     expect(text).not.toContain('AI-HUB')
     expect(text).not.toContain('App 在线')
     expect(text).not.toContain('设备台账')
+  })
+
+  it('announces the connected state exactly once and offers disconnect', () => {
+    const panel = render(statePayload({ browserConnected: true, connected: true }))
+    const text = textOf(panel)
+    expect(text.split('手机已连接').length - 1).toBe(1)
+    expect(buttonByAction(panel, 'disconnect')).toBeTruthy()
+  })
+
+  it('summarizes active browser sessions and expands their non-sensitive connection history', () => {
+    const now = Date.now()
+    const panel = render(statePayload({
+      now,
+      browserConnected: true,
+      connected: true,
+      browserDevices: [
+        { id: 'a1b2c3d4', pairedAt: now - 500_000, lastSeenAt: now - 1000, status: 'active' },
+        { id: 'e5f60718', pairedAt: now - 400_000, lastSeenAt: now - 120_000, status: 'idle' },
+        { id: '99887766', pairedAt: now - 300_000, lastSeenAt: now - 200_000, status: 'disconnected' },
+      ],
+    }))
+    expect(textOf(panel)).toContain('手机已连接 · 1 个')
+    expect(textOf(panel)).toContain('1 个活跃 · 共 3 个配对会话')
+    expect(textOf(panel)).not.toContain('最近无活动')
+    expect(textOf(panel)).not.toContain('仅显示本次插件运行期间')
+
+    ;(buttonByAction(panel, 'devices')!.props.onClick as () => void)()
+    const expanded = rerender()
+    const text = textOf(expanded)
+    expect(text).toContain('当前活跃')
+    expect(text).toContain('最近无活动')
+    expect(text).toContain('已断开')
+    expect(text).toContain('2 分钟前有请求')
+    expect(text).toContain('仅显示本次插件运行期间的浏览器配对会话；不是完整历史设备库')
+    expect(text).toContain('不同浏览器或隐私窗口会分别计数')
+    expect(text).toContain('#a1b2c3d4')
+    expect(buttonByAction(expanded, 'devices')!.props['aria-expanded']).toBe('true')
+  })
+
+  it('explains that no browser has paired during this run without implying there is no history', () => {
+    const panel = render(statePayload())
+    expect(textOf(panel)).toContain('本次运行暂无配对记录')
+    ;(buttonByAction(panel, 'devices')!.props.onClick as () => void)()
+    expect(textOf(rerender())).toContain('手机扫码配对后，会在这里显示连接记录')
+  })
+
+  it('keeps advanced settings collapsed until the summary is pressed', () => {
+    const panel = render(statePayload())
+    const body = elements(panel).find((element) => element.props.className === 'dshp_advBody')
+    expect(body).toBeTruthy()
+    expect(body!.props.hidden).toBe(true)
+    const summary = elements(panel).find((element) => element.props.className === 'dshp_summary' && element.props['data-action'] !== 'devices')
+    ;(summary!.props.onClick as () => void)()
+    const opened = elements(rerender()).find((element) => element.props.className === 'dshp_advBody')
+    expect(opened!.props.hidden).toBeUndefined()
   })
 
   it('draws the LAN QR inside the page and offers both connection modes', () => {
@@ -195,7 +252,7 @@ describe('browser-only phone panel', () => {
     expect((qr!.props.dangerouslySetInnerHTML as { __html: string }).__html).toContain('lan-qr')
     expect(modeButton(panel, 'lan')?.props['aria-pressed']).toBe('true')
     expect(modeButton(panel, 'anywhere')?.props['aria-pressed']).toBe('false')
-    expect(textOf(panel)).toContain('配置固定域名后，所有配对都需要连接密码')
+    expect(textOf(panel)).toContain('已配置固定域名，扫码需要连接密码')
     expect(textOf(panel)).toContain('复制链接')
   })
 
@@ -213,7 +270,7 @@ describe('browser-only phone panel', () => {
     const text = textOf(rerender())
     expect(text).toContain('246810')
     expect(text).toContain('dsh.example.com')
-    expect(text).toContain('配置固定域名后，同一 Wi-Fi 与任意网络配对都需要这个密码')
+    expect(text).toContain('此密码同时用于同一 Wi-Fi 与任意网络配对')
   })
 
   it('keeps the connectivity test disabled until a fixed domain is saved', () => {

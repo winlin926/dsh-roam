@@ -1,6 +1,6 @@
 {
   "name": "dsh-roam",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "把电脑上的 DeepSeek Harness 会话带到手机浏览器：扫码即用，不安装 App，不依赖中转账号。",
   "license": "MIT",
   "repository": {
@@ -47,6 +47,7 @@
   ],
   "files": [
     "lib/**/*.js",
+    "lib/mobile/**/*",
     "assets",
     "cordis.patch.yml",
     "LICENSE",
@@ -58,6 +59,7 @@
     "clean": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
     "build": "pnpm clean && tsc -p tsconfig.json && node scripts/copy-browser-client.mjs",
     "test": "pnpm build && vitest run",
+    "test:browser": "node --test test/browser/mobile.acceptance.mjs",
     "prepack": "pnpm build",
     "prepublishOnly": "pnpm test"
   },
@@ -75,6 +77,7 @@
     "@types/node": "24.10.1",
     "@types/qrcode": "^1.5.6",
     "@types/ws": "^8.18.2",
+    "playwright-core": "1.58.2",
     "typescript": "5.9.3",
     "vitest": "4.1.10"
   },

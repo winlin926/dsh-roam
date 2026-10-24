@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme:light)">
+  <meta name="theme-color" content="#141416" media="(prefers-color-scheme:dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="DSH Mobile">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/brand-icon/180">
+  <title>DSH Mobile</title>
+  <link rel="stylesheet" href="/mobile/styles.css">
+</head>
+<body>
+  <main id="appShell" class="app-shell">
+    <section id="homeView" class="view home-view" aria-label="New task">
+      <header class="topbar home-topbar">
+        <button id="homeDrawerButton" class="icon-button" type="button" data-open-drawer aria-label="打开会话列表" aria-haspopup="dialog"></button>
+        <div class="brand-lockup"><img class="brand-logo light-logo" src="/brand-logo/light" alt=""><img class="brand-logo dark-logo" src="/brand-logo/dark" alt=""><span>DSH Mobile</span></div>
+        <span id="homeConnection" class="connection-mark" role="status"></span>
+      </header>
+      <div class="home-content">
+        <div class="home-hero">
+          <div class="hero-brand"><img class="hero-logo light-logo" src="/brand-logo/light" alt=""><img class="hero-logo dark-logo" src="/brand-logo/dark" alt=""><h1 data-copy="heroTitle">探索未至之境</h1><span class="preview-badge" data-copy="previewBadge">预览版</span></div>
+          <p data-copy="heroSubtitle">描述任务，开始新的工作。</p>
+        </div>
+        <form id="homeComposer" class="composer-card" data-composer="home">
+          <div class="attachment-tray" data-attachment-tray="home" hidden></div>
+          <textarea id="homePrompt" rows="2" data-copy-placeholder="promptHome" aria-label="新建任务"></textarea>
+          <div class="composer-toolbar">
+            <button class="tool-icon" type="button" data-attach="home" aria-label="添加附件">＋</button>
+            <button class="model-trigger" type="button" data-settings="home"><span data-icon="settings"></span><span data-copy="homeSettings">模型与设置</span></button>
+            <span class="toolbar-spacer"></span>
+            <button id="homeSend" class="send-button" type="submit" aria-label="发送" disabled><span data-icon="send"></span></button>
+          </div>
+          <p id="homeError" class="inline-error" role="alert"></p>
+        </form>
+        <button id="homeWorkspace" class="home-workspace" type="button"></button>
+      </div>
+      <footer class="home-footer"><span class="footer-mark">DSH</span><span data-copy="homeFooter">把电脑上的工作带到手机</span></footer>
+    </section>
+
+    <section id="chatView" class="view chat-view" aria-label="Conversation" hidden>
+      <header class="topbar chat-topbar">
+        <button id="chatHomeButton" class="icon-button chat-home-button" type="button" aria-label="返回新建首页"></button>
+        <button id="chatDrawerButton" class="icon-button" type="button" data-open-drawer aria-label="打开会话列表" aria-haspopup="dialog"></button>
+        <button id="chatIdentity" class="chat-identity" type="button"><strong id="chatTitle"></strong><span id="chatSubtitle"></span></button>
+        <button id="chatMore" class="icon-button" type="button" aria-label="会话操作" aria-haspopup="dialog"></button>
+      </header>
+      <div id="messageScroll" class="message-scroll" role="log" aria-live="polite" aria-label="对话消息">
+        <div id="messageList" class="message-list"></div>
+      </div>
+      <button id="bottomButton" class="bottom-button" type="button" hidden><span data-icon="down"></span><span id="bottomButtonLabel"></span></button>
+      <div id="bottomDock" class="bottom-dock">
+        <section id="todoDock" class="todo-dock" hidden></section>
+        <section id="queueDock" class="queue-dock" hidden></section>
+        <div id="chatAttachmentTray" class="attachment-tray" data-attachment-tray="chat" hidden></div>
+        <form id="chatComposer" class="composer-card" data-composer="chat">
+          <textarea id="chatPrompt" rows="1" data-copy-placeholder="promptChat" aria-label="继续对话"></textarea>
+          <div class="composer-toolbar">
+            <button class="tool-icon" type="button" data-attach="chat" aria-label="添加附件">＋</button>
+            <button class="model-trigger" type="button" data-settings="chat"><span data-icon="settings"></span><span data-copy="sessionSettings">会话设置</span></button>
+            <span class="toolbar-spacer"></span>
+            <button id="steerButton" class="steer-button" type="button" hidden>打断</button>
+            <button id="chatSend" class="send-button" type="submit" aria-label="发送" disabled><span data-icon="send"></span><span id="sendLabel"></span></button>
+            <button id="stopButton" class="stop-button" type="button" aria-label="停止生成" hidden><span data-icon="stop"></span></button>
+          </div>
+          <p id="chatError" class="inline-error" role="alert"></p>
+        </form>
+        <section id="interactionDock" class="interaction-dock" hidden></section>
+        <p id="tunnelWarning" class="tunnel-warning" hidden></p>
+      </div>
+    </section>
+  </main>
+
+  <div id="navigationDrawer" class="drawer-layer" hidden>
+    <button id="drawerMask" class="drawer-mask" type="button" tabindex="-1" aria-label="关闭会话列表"></button>
+    <aside id="drawerPanel" class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+      <header class="drawer-header"><div class="brand-lockup"><img class="brand-logo light-logo" src="/brand-logo/light" alt=""><img class="brand-logo dark-logo" src="/brand-logo/dark" alt=""><strong id="drawerTitle">DSH Mobile</strong></div><button id="drawerClose" class="icon-button" type="button" aria-label="关闭会话列表">×</button></header>
+      <div class="drawer-scroll">
+        <button id="workspaceButton" class="workspace-button" type="button"><span class="workspace-icon" data-icon="folder"></span><span class="workspace-copy"><small data-copy="currentWorkspace">当前工作区</small><strong id="workspaceName"></strong><span id="workspacePath"></span></span><span data-icon="chevronDown"></span></button>
+        <button id="newTaskButton" class="new-task-button" type="button"><span data-icon="plus"></span><span data-copy="newTask">新建任务</span></button>
+        <label class="drawer-search"><span data-icon="search"></span><input id="sessionSearch" type="search" autocomplete="off" enterkeyhint="search" data-copy-placeholder="searchPlaceholder"><button id="searchClear" type="button" aria-label="清空搜索" hidden>×</button></label>
+        <div class="drawer-section-heading"><span id="sessionListTitle" data-copy="recentSessions">最近会话</span><button id="refreshButton" class="small-icon-button" type="button" aria-label="刷新"><span data-icon="refresh"></span></button></div>
+        <div id="sessionList" class="session-list" aria-busy="true"></div>
+        <p id="searchNote" class="search-note" role="status"></p>
+        <button id="archiveButton" class="archive-button" type="button"><span data-icon="archive"></span><span data-copy="archivedSessions">已归档会话</span><span data-icon="chevronRight"></span></button>
+      </div>
+      <footer class="drawer-footer"><button id="connectionButton" type="button"><span id="drawerConnectionDot" class="status-dot"></span><span id="drawerConnection"></span><span data-icon="refresh"></span></button><p id="drawerTunnelWarning" hidden></p></footer>
+    </aside>
+  </div>
+
+  <div id="overlayRoot" class="overlay-root"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <input id="albumInput" type="file" accept="image/*" multiple hidden>
+  <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden>
+  <input id="fileInput" type="file" multiple hidden>
+  <script type="module" src="/mobile/boot.js"></script>
+</body>
+</html>

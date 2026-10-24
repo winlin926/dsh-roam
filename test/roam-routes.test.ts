@@ -277,6 +277,12 @@ describe('phone bridge settings routes', () => {
 
     const connected = await getJson(port, '/phone-bridge/state')
     expect(connected.body.connected).toBe(true)
+    expect(connected.body.browserDevices).toHaveLength(1)
+    expect(connected.body.browserDevices[0]).toMatchObject({ status: 'active' })
+    expect(connected.body.browserDevices[0].id).toMatch(/^[a-f0-9]{8}$/)
+    expect(connected.body.browserDevices[0]).not.toHaveProperty('token')
+    expect(connected.body.browserDevices[0]).not.toHaveProperty('cookie')
+    expect(connected.body.browserDevices[0]).not.toHaveProperty('ip')
     // The consumed token would render a dead QR, so the state read mints one.
     expect(connected.body.qrSvg).toMatch(/^<svg/)
     const renewed = new URL(String(connected.body.pairingUrl)).searchParams.get('token')
@@ -293,6 +299,8 @@ describe('phone bridge settings routes', () => {
     expect(disconnected.status).toBe(200)
     expect(disconnected.body.ok).toBe(true)
     expect(disconnected.body.connected).toBe(false)
+    expect(disconnected.body.browserDevices).toHaveLength(1)
+    expect(disconnected.body.browserDevices[0]).toMatchObject({ status: 'disconnected' })
     const rotated = new URL(String(disconnected.body.pairingUrl)).searchParams.get('token')
     expect(rotated).toBeTruthy()
     expect(rotated).not.toBe(pairedToken)

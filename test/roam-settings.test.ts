@@ -38,6 +38,7 @@ const STATE_FIELDS = [
   'lanUrls',
   'connected',
   'browserConnected',
+  'browserDevices',
   'tunnelActive',
   'tunnelLoading',
   'tunnelProvider',

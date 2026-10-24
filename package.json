@@ -43,6 +43,8 @@
     "手机扫码",
     "手机继续会话",
     "远程访问",
+    "远程连接",
+    "remote-connection",
     "browser"
   ],
   "files": [

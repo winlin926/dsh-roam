@@ -2,11 +2,11 @@
 
 **电脑在跑任务，你不一定要一直坐在电脑前。**
 
-dsh-roam 把 DeepSeek Harness 的会话带到手机浏览器：看看进展、补一句要求、处理需要你确认的工具调用，或者在外面重新开一个小任务。扫码就能用，不用远程桌面，也不用安装 App。
+dsh-roam 远程连接电脑与手机：把 DeepSeek Harness 的会话带到手机浏览器，看看进展、补一句要求、处理需要你确认的工具调用，或者在外面重新开一个小任务。扫码就能用，不用远程桌面，也不用安装 App。
 
 [English](#english) · [安装与使用](#安装与使用) · [连接方式](#连接方式) · [1.2.0 更新内容](#120-更新内容)
 
-> 这是一个独立的 DeepSeek Harness 插件，不是 DeepSeek 官方出品的手机客户端。1.x 只提供手机浏览器界面；仍在使用旧 AI-HUB App 的朋友请留在 `0.3.1` / `legacy/aihub`。
+> 这是一个独立的 DeepSeek Harness 插件，不是 DeepSeek 官方出品的手机客户端。手机端只有浏览器界面，不依赖任何 App。
 
 ## 它能帮你做什么
 
@@ -113,8 +113,6 @@ dsh-roam 默认不把你的工作台直接暴露出去：
 
 **为什么升级后要重新扫码？** 浏览器会话只存在内存里，插件重启后旧 Cookie 不再有效。设置和公网配置不会因为升级被删除。
 
-**旧 App 还能用吗？** 1.x 已移除 AI-HUB。需要旧 App 请固定使用 `0.3.1` 或 `legacy/aihub`，不要直接升级到 1.x。
-
 ## 开发与发布
 
 ```bash
@@ -125,9 +123,9 @@ pnpm test:browser
 npm pack --dry-run
 ```
 
-贡献代码前请先阅读 [AGENTS.md](AGENTS.md) 与 [RELEASING.md](RELEASING.md)。`src/` 是源码，`lib/` 是构建产物，不要直接修改后者。
+`src/` 是源码，`lib/` 是构建产物，不要直接修改后者；提交前请先跑完上面的构建与测试。
 
-当前验证：21 个 Node 测试文件、228 条测试通过；真实 Chrome 移动交互验收 24/24 通过。Android / iOS 真机、Safari、Firefox 和真实桌面 Host 的完整回归仍需要继续验证，移动模拟不等于真机测试。
+当前验证：20 个 Node 测试文件、226 条测试通过；真实 Chrome 移动交互验收 24/24 通过。Android / iOS 真机、Safari、Firefox 和真实桌面 Host 的完整回归仍需要继续验证，移动模拟不等于真机测试。
 
 - [npm 包](https://www.npmjs.com/package/dsh-roam)
 - [GitHub Releases](https://github.com/winlin926/dsh-roam/releases)
@@ -146,11 +144,11 @@ MIT，Copyright (c) 2026 winlin926。
 
 **Your computer can keep working even when you are not sitting in front of it.**
 
-dsh-roam brings your DeepSeek Harness sessions to a phone browser: check progress, add a requirement, approve a tool call, or start a small task while you are away. Scan a QR code and you are in — no remote desktop, no extra app.
+dsh-roam is a remote connection to your DeepSeek Harness sessions from a phone browser: check progress, add a requirement, approve a tool call, or start a small task while you are away. Scan a QR code and you are in — no remote desktop, no extra app.
 
 [中文说明](#dsh-roam) · [Install and connect](#install-and-connect) · [Connection options](#connection-options) · [What is new in 1.2.0](#whats-new-in-120)
 
-> An independent plugin for DeepSeek Harness, not an official DeepSeek mobile client. Version 1.x is browser-only. If you still rely on the old AI-HUB app, stay on `0.3.1` / `legacy/aihub`.
+> An independent plugin for DeepSeek Harness, not an official DeepSeek mobile client. The phone side is browser-only — no app required.
 
 ## Why you might want it
 
@@ -243,9 +241,9 @@ pnpm test:browser
 npm pack --dry-run
 ```
 
-Read [AGENTS.md](AGENTS.md) and [RELEASING.md](RELEASING.md) before contributing. Source lives in `src/`; generated files in `lib/` should not be edited by hand.
+Source lives in `src/`; generated files in `lib/` should not be edited by hand. Run the full build and test suite above before contributing.
 
-Validation currently includes 228 passing Node tests across 21 files and 24 passing real-Chrome mobile interaction cases. Full physical Android/iOS, Safari, Firefox and real desktop-Host regression is still needed; mobile emulation is not a substitute for device testing.
+Validation currently includes 226 passing Node tests across 20 files and 24 passing real-Chrome mobile interaction cases. Full physical Android/iOS, Safari, Firefox and real desktop-Host regression is still needed; mobile emulation is not a substitute for device testing.
 
 - [npm package](https://www.npmjs.com/package/dsh-roam)
 - [GitHub Releases](https://github.com/winlin926/dsh-roam/releases)

@@ -4,3 +4,8 @@ lib/
 test/browser/artifacts/
 # Windows 证书缓存：pnpm 在部分机器上按字面量落盘，不属于仓库内容
 %SystemDrive%/
+# 内部开发流程文档与治理文件：仅本地使用，不发布
+AGENTS.md
+RELEASING.md
+.agents/
+test/court.test.ts

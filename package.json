@@ -1,6 +1,6 @@
 {
   "name": "dsh-roam",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "把电脑上的 DeepSeek Harness 会话带到手机浏览器：扫码即用，不安装 App，不依赖中转账号。",
   "license": "MIT",
   "repository": {

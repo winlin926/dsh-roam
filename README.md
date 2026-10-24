@@ -1,149 +1,255 @@
 # dsh-roam
 
-把电脑上正在运行的 DeepSeek Harness 会话带到手机浏览器：扫码即用，不安装 App，不依赖 AI-HUB，也不用把会话搬到云端。
+**电脑在跑任务，你不一定要一直坐在电脑前。**
 
-1.0 起只保留浏览器客户端。AI-HUB 兼容版本停在 `0.3.1`，见 [legacy/aihub](https://github.com/winlin926/dsh-roam/tree/legacy/aihub)。
+dsh-roam 把 DeepSeek Harness 的会话带到手机浏览器：看看进展、补一句要求、处理需要你确认的工具调用，或者在外面重新开一个小任务。扫码就能用，不用远程桌面，也不用安装 App。
 
-## 它解决什么问题
+[English](#english) · [安装与使用](#安装与使用) · [连接方式](#连接方式) · [1.2.0 更新内容](#120-更新内容)
 
-DeepSeek Harness 的工作台在电脑上，人离开电脑后，正在跑的会话就不方便继续。dsh-roam 给官方 DSH 加一条本地优先的移动接入层：
+> 这是一个独立的 DeepSeek Harness 插件，不是 DeepSeek 官方出品的手机客户端。1.x 只提供手机浏览器界面；仍在使用旧 AI-HUB App 的朋友请留在 `0.3.1` / `legacy/aihub`。
 
-- **手机浏览器零安装**：扫码后新建会话，或从左上角进入最近会话继续对话；可切换模型与预设、发送、取消、回答提问。
-- **不绑定中转账号**：局域网直连；公网可用 Cloudflare 临时隧道，也可以接自己的固定域名和 frpc。
-- **不复制整个桌面**：手机端只做会话操作，设置、插件、终端和文件管理仍留在电脑上。
-- **默认不敞开门**：设置面板只接受本机回环请求；二维码令牌一次性、5 分钟有效；公网入口必须输入 6 位连接密码。
+## 它能帮你做什么
 
-它**不是**远程桌面，也不会把 DSH 的完整界面投到手机上。
+- **接着聊**：电脑正在进行的会话，手机上可以继续提问、补充要求。
+- **新开任务**：在首页写下想做的事，选择工作区、模型、思考强度和会话模式，发送后就开始。
+- **少一点等待**：查看待办和工具进展；需要授权或回答问题时，在手机上直接处理。
+- **随手带资料**：相册、拍照、粘贴图片，或发送其他文件。
+- **不用担心找不到会话**：左上角打开抽屉，最近、已归档、搜索、切换工作区都在这里。
+- **知道谁连过**：「连接设备」显示本次运行中的配对会话、最近请求时间和状态，不把旧连接误报成在线。
 
-## 和旧版本的区别
+它只做手机上的任务交互，不把完整桌面 IDE 塞进手机。终端、插件管理和复杂文件操作仍然留在电脑上。
 
-| 能力 | 1.0 浏览器版 | 0.3.x AI-HUB 兼容版 |
-| --- | --- | --- |
-| 手机浏览器扫码 | ✅ | ✅ |
-| AI-HUB 原生 App | ❌ 已移除 | ✅ |
-| `dsh-mobile-plugin` 依赖 | ❌ 已移除 | ✅ |
-| 设备台账 / App 在线状态 | ❌ 已移除 | ✅ |
-| 独立的桌面配对页 | ❌ 已移除，统一进设置面板 | ✅ |
-| 适用分支 | `main` | `legacy/aihub` |
+## 安装与使用
 
-如果你仍在使用 AI-HUB App，请固定在 `0.3.1`，不要升级到 1.0。
+### 先准备
 
-## 快速开始
+- 电脑运行 **DeepSeek Harness 0.2.x**，Node.js 为 **22.19 或更新版本**。
+- 手机有浏览器即可，不需要安装应用。
+- 最简单的情况：电脑和手机连接同一个 Wi-Fi。
 
-要求：DeepSeek Harness 0.2.x、Node.js 22.19+，电脑和手机在同一 Wi-Fi（首次配对）。
+### 安装插件
+
+**在 DSH 里安装（推荐给大多数朋友）**
+
+打开 **设置 → 插件市场**，搜索 **dsh-roam**，点击安装，然后重启 DSH。
+
+**喜欢用命令行，也可以这样安装：**
 
 ```bash
-dsh plugin --profile web add dsh-roam@1.1.0
+dsh plugin --profile web add dsh-roam@1.2.0
 ```
 
-重启 DSH，打开 **设置 → 连接手机**：
+装好后进入 **设置 → 连接手机**。
 
-1. 手机相机扫描 **同一 Wi-Fi** 里的二维码。
-2. 浏览器打开新建任务首页，输入内容并发送即可创建会话；继续已有会话时，点左上角 ☰ 从左侧抽屉选择。
-3. 工作区可从抽屉或首页输入卡下方切换；模型、思考强度与会话模式从输入卡的「模型与设置」选择。
-4. 二维码 5 分钟有效，过期或使用一次后点 **换一张**。
-5. 顶部显示当前活跃配对会话数；展开「连接设备」可查看本次插件运行中的配对时间、最近有请求的时间和会话状态。无活动不表示已断开，已撤销或过期会话不会显示；这不是重启前的完整历史设备库，也不代表物理设备数量。
+![电脑上的「连接手机」设置页](docs/images/connect-phone.png)
 
-## 手机端能做什么
+### 第一次连接
 
-- **新建首页**：打开就是纯净的新建任务页，不自动进入最近聊天，也不在首页堆叠最近会话。点左上角 ☰ 打开左侧抽屉，可新建、搜索、切换工作区、查看最近 / 已归档会话与连接状态。
-- **输入卡设置**：从「模型与设置」选择模型、思考强度与会话模式（标准 / PTC / 极简 / 创造）；新会话发送前生效。聊天中也可从输入卡调整设置，会话模式只能在首条消息前更改。
-- **从空状态到聊天**：新建首页本身不是一个已创建的空会话；发送后才创建会话、进入全屏聊天并提交首条消息。抽屉里的「新建任务」随时返回这个状态。
-- **图片**：相册多选、拍照、粘贴，自动压缩后发送；单条最多 6 个附件，托盘可删除、失败可重试；历史图片按需加载、点击放大。
-- **文件**：任意文件先上传换收据再随消息发送，历史显示文件名与大小（手机端暂不支持回读文件内容）。
-- **工具审批**：电脑端触发的授权会同步到手机，可直接选「允许一次」或「拒绝」。
-- **边跑边补**：生成中默认排队，下一轮自动执行；需要立刻改方向时点「打断」。
-- **长会话**：消息顶部「加载更早」按页回看，按 `seq` 去重、滚动位置不跳。
-- **会话管理**：重命名、归档 / 取消归档、按标题或内容搜索（搜索 provider 不可用时回退本地过滤）。
-- **提问与待办**：agent 的提问可直接作答，待办进度在会话里可见。
+1. 在「连接手机」里选择 **同一 Wi-Fi**。
+2. 用手机相机扫描页面上的二维码。
+3. 浏览器打开首页后，输入第一句话，发送即可创建会话。
+4. 想继续之前的工作，点左上角 **☰**，从左侧抽屉选择会话。
 
-## 任意网络
+二维码是一次性的，5 分钟内有效；过期或已经用过，点「换一张」即可。
 
-两种方式，任选一种：
+![手机上的新建任务首页](docs/images/mobile-home.png)
 
-**临时隧道**：在 **高级设置 → 网络配置** 里点 **开启临时隧道**。插件优先使用 cloudflared 快速隧道，失败时切到 pinggy。地址每次开启都会变化，适合临时外出。
+公网入口会要求输入页面显示的 **6 位连接密码**。浏览器会话只保存在内存中，插件或 DSH 重启后需要重新扫码，这是为了不给旧连接留下长期有效的入口。
 
-**固定域名**：有自己的域名和 frpc / SakuraFrp 时，填 `https://你的域名` 并保存。要求：
+## 连接方式
 
-- 域名直接解析到隧道节点，不要套 CDN；
-- 开一条 HTTP 隧道（80 端口）用于 Let's Encrypt 验证和跳转，一条 HTTPS 隧道（443 端口）指向本机 `43128`；
-- frpc 的「自动 HTTPS」填同一个域名，并在自定义设置里加 `auto_https_mode = http`；
-- 面板里点 **申请证书**，插件会把 `<域名>.crt` / `<域名>.key` 写进 frpc 工作目录。证书 90 天有效，剩 30 天时自动续期；续期后需要重启隧道才会加载新证书。
-
-固定公网地址只接受 `https://`。只要请求带有 `Forwarded`、`X-Forwarded-*`、`X-Real-IP` 或 `CF-*` 转发头，就按公网入口校验密码；配置固定公网域名后，所有配对也一律要求密码。安全判定不依赖可被改写的 `Host`。
-
-临时隧道每次开启都会换域名，手机需要重新扫码；需要长期使用请配置固定域名。
-
-## 安全边界
-
-- `/phone-bridge/*` 管理接口只接受本机回环请求，并校验 Host 与同源；面板不会把管理接口暴露到公网。
-- 局域网二维码里是 32 字节一次性令牌，5 分钟有效，配对后作废。
-- 公网入口必须输入 6 位连接密码；连续输错会触发限速。带转发头的请求和配置了固定域名的实例一律按公网入口处理。
-- 浏览器会话只认服务端签发的 Cookie，不按来源 IP 放行，也不会把客户端自带的 Cookie 提升为会话。会话 30 天绝对过期，插件重启后需要重新扫码。
-- 修改连接密码会让已连接的浏览器立即失效。
-- **本版本没有应用层端到端加密。** 公网路径的 TLS 在 Cloudflare / Pinggy / frps 或反向代理处终止，运营方理论上能看到会话明文。对内容保密有更高要求时，请使用自己控制的固定域名与反向代理，或只在可信局域网内使用。
-
-## 数据与网络
-
-| 项目 | 位置 / 行为 |
+| 你的情况 | 建议用法 |
 | --- | --- |
-| 数据目录 | `%USERPROFILE%\.dsh\dsh-roam`（设置 `DSH_HOME` 时跟随） |
-| 设置 | `settings.json` |
-| 连接密码 | `mobile-pairing-pin.json`，仅本机可读 |
-| 证书状态 | `acme/` |
-| cloudflared | 首次开启临时隧道时下载到数据目录的 `bin/` |
-| 端口 | 默认 `43128`，被占用时自动顺延 |
+| 电脑和手机在家或同一个办公室 Wi-Fi | 选 **同一 Wi-Fi**，扫码即可，最省事 |
+| 临时出门，手边没有域名 | 在 **高级设置 → 网络配置** 开启临时隧道，优先 Cloudflare，失败可回退 Pinggy |
+| 有自己的域名，准备长期使用 | 配置固定域名 + frpc / SakuraFrp，再申请证书 |
 
-网络请求只发生在：开启临时隧道时（Cloudflare / Pinggy）、申请或续期证书时（Let's Encrypt）。没有遥测，没有账号体系，不把会话内容上传到插件自己的服务器。
+**没有域名也能用**：临时隧道不需要你购买域名，也不需要配置固定公网 IP。隧道地址每次开启可能变化，适合临时使用；手机记得重新扫码。若希望地址长期不变，再配置自己的域名。
+
+固定域名目前支持 HTTPS 和 Let's Encrypt 证书申请/续期。详细的 frpc 配置、数据目录和安全边界见[连接与安全](#连接与安全)。
+
+## 手机上具体能用哪些功能
+
+- 新建首页直接输入任务，发送后才创建会话。
+- 全屏聊天，模型、思考强度和会话模式都可以从输入卡调整；会话模式在第一条消息后锁定。
+- 图片多选、拍照、粘贴，自动压缩后发送；历史图片可放大查看。
+- 文件先上传，再随消息发送；历史显示文件名和大小，文件内容暂时请在电脑端查看。
+- 工具审批「允许一次」或「拒绝」。
+- 生成中可排队补充；想立即改变方向，点「打断」。
+- 长会话可「加载更早」，回看时保持阅读位置。
+- 会话重命名、归档、取消归档、按标题或内容搜索；全文搜索不可用时退回标题过滤。
+- 待办、提问、连接状态和最近设备一目了然。
+
+## 连接与安全
+
+dsh-roam 默认不把你的工作台直接暴露出去：
+
+- 设置管理接口只接受电脑本机回环请求，并校验 Host 和同源。
+- 二维码令牌一次性、5 分钟有效；公网入口必须输入 6 位密码，连续输错会限速。
+- 浏览器只接受服务端签发的 Cookie，不因为来自同一个 IP 就自动放行。
+- 修改连接密码会立即使已连接的浏览器失效。
+- **没有应用层端到端加密**。公网 TLS 在 Cloudflare、Pinggy、frps 或反向代理处终止，相关运营方理论上可以看到会话明文。内容比较敏感时，建议使用自己控制的固定域名和反向代理，或只在可信局域网使用。
+
+本地设置、连接密码和证书状态位于 `%USERPROFILE%\.dsh\dsh-roam`（`DSH_HOME` 可覆盖）。没有遥测，也没有插件自己的账号体系。只有开启临时隧道或申请/续期证书时，才会连接相应外部服务。
+
+## 1.2.0 更新内容
+
+**这一版，手机端终于更像一个能随手拿起来用的工作台了。**
+
+- **首页更清净**：只保留当前要做的事，最近会话不再挤占首屏。
+- **找会话更顺手**：左上角 ☰ 打开左侧抽屉，工作区、搜索、最近会话、归档都在这里。
+- **聊天更像手机**：独立返回、清楚的标题和运行状态、底部输入区，模型与模式选择也换成了适合触屏的底部面板。
+- **小细节补上了**：键盘和焦点、弹层返回、流式消息、长会话阅读位置、慢请求切换会话，以及发送失败后的草稿和附件保留。
+- **连接情况看得见**：新增「连接设备」，活跃会话有几个、最近什么时候有请求、是否手动断开，一看就明白。
+- **第一次来也能看懂**：README 增加中英文说明、真实手机与设置截图，安装、连接和使用路径重新梳理。
+
+完整的兼容边界、测试记录和升级说明见 [1.2.0 发布说明](docs/releases/v1.2.0.md)。
 
 ## 常见问题
 
-**手机打不开二维码里的地址**：确认同一 Wi-Fi、电脑防火墙放行实际端口，并确认手机没有连访客网络。端口不是 43128 时以面板显示为准。
+**手机打不开二维码里的地址？** 先确认电脑和手机确实在同一个 Wi-Fi，防火墙允许面板显示的端口。端口不是 43128 时，以页面显示为准。
 
-**公网一直转圈**：多半是 cloudflared 下载失败，换网络或改用固定域名。临时隧道地址每次开启都会变，出门前重新扫一次。
+**隧道连不上？** 多半是 cloudflared 下载失败，换个网络再试，或改用固定域名。临时隧道每次地址可能不同，出门前重新扫码。
 
-**二维码提示失效**：浏览器令牌 5 分钟过期，面板会自动换码；也可以点 **换一张**。
+**为什么升级后要重新扫码？** 浏览器会话只存在内存里，插件重启后旧 Cookie 不再有效。设置和公网配置不会因为升级被删除。
 
-**升级后 App 连不上**：1.0 已移除 AI-HUB。需要 App 请回退 `0.3.1` 或使用 `legacy/aihub` 分支。
+**旧 App 还能用吗？** 1.x 已移除 AI-HUB。需要旧 App 请固定使用 `0.3.1` 或 `legacy/aihub`，不要直接升级到 1.x。
 
-**升级后浏览器要求重新扫码**：浏览器会话只存在内存中，插件升级或 DSH 重启后需要重新扫码；这是为了不让旧 Cookie 长期有效。
-
-## 开发
+## 开发与发布
 
 ```bash
-pnpm install
-pnpm build         # 清空 lib，编译桥接代码并复制浏览器静态资源
-pnpm test          # 先构建，再跑全部 Node / Vitest 测试
-pnpm test:browser  # 使用本机 Chrome 跑移动端交互验收
-```
-
-- `src/` 是唯一源码：`index.js`（宿主入口）、`client.js`（设置面板，浏览器经典脚本）、`mobile/`（手机主界面，原生 HTML / CSS / ESM）、`bridge/*.ts`（桥接、隧道、证书与连接页面）。
-- `lib/` 是构建产物，不提交、不手改。`tsconfig.json` 显式排除 `src/client.js` 和 `src/mobile/**`，不让 tsc 改写浏览器脚本；`scripts/copy-browser-client.mjs` 原样复制 `client.js` 与手机静态资源到 `lib/`。
-- `lib/mobile/` 已列入 npm `files` 白名单。手机静态资源由 `lan-mobile-static` 在鉴权后按白名单提供，主页面脚本使用同源 CSP；`lan-mobile-pages` 只负责重连与连接密码页。页面不依赖外部前端框架或 CDN。
-- `src/client.js` 不能加顶层 `import` / `export`，否则设置页白屏。测试引用 `lib/`，所以改完源码必须先构建。
-- `test:browser` 通过 `playwright-core` 驱动已经安装的 Chrome / Edge，不自动下载浏览器。可用 `DSH_MOBILE_CHROME_PATH` 指定可执行文件；缺少依赖或浏览器时默认 SKIP，设置 `DSH_MOBILE_BROWSER_REQUIRED=1` 可改为失败。
-
-发布前检查：
-
-```bash
+pnpm install --frozen-lockfile
+pnpm build
 pnpm test
 pnpm test:browser
 npm pack --dry-run
 ```
 
-## 测试状态
+贡献代码前请先阅读 [AGENTS.md](AGENTS.md) 与 [RELEASING.md](RELEASING.md)。`src/` 是源码，`lib/` 是构建产物，不要直接修改后者。
 
-- Node 自动化测试：21 个测试文件、228 条，`pnpm test` 全绿。
-- Chrome 交互验收：24 / 24 通过，覆盖新建首页、抽屉导航、创建并发送、设置、审批 / 提问、队列、图片 / 文件失败恢复、重命名 / 归档、流式节点、历史滚动与慢请求跨会话恢复。测试使用真实 Chrome、移动视口和桩桥；不等于实体手机测试。
-- 当前界面与 1.1.0 功能尚未在 Android / iOS 真机验证；iOS / iPadOS Safari、Firefox、低端 Android 未实测。浏览器移动模拟不能替代真机回归。
-- 公网验证使用固定域名 + frpc + Let's Encrypt 证书；临时隧道由 cloudflared 提供。
+当前验证：21 个 Node 测试文件、228 条测试通过；真实 Chrome 移动交互验收 24/24 通过。Android / iOS 真机、Safari、Firefox 和真实桌面 Host 的完整回归仍需要继续验证，移动模拟不等于真机测试。
 
-## 版本记录
-
-- npm：https://www.npmjs.com/package/dsh-roam
-- Releases：https://github.com/winlin926/dsh-roam/releases
-- AI-HUB 兼容版：`0.3.1` / `legacy/aihub`
+- [npm 包](https://www.npmjs.com/package/dsh-roam)
+- [GitHub Releases](https://github.com/winlin926/dsh-roam/releases)
+- [更新日志](CHANGELOG.md)
+- [第三方许可](THIRD_PARTY_NOTICES.md)
 
 ## 许可证
 
-MIT，Copyright (c) 2026 winlin926。第三方组件与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+MIT，Copyright (c) 2026 winlin926。
+
+---
+
+<a id="english"></a>
+
+# dsh-roam (English)
+
+**Your computer can keep working even when you are not sitting in front of it.**
+
+dsh-roam brings your DeepSeek Harness sessions to a phone browser: check progress, add a requirement, approve a tool call, or start a small task while you are away. Scan a QR code and you are in — no remote desktop, no extra app.
+
+[中文说明](#dsh-roam) · [Install and connect](#install-and-connect) · [Connection options](#connection-options) · [What is new in 1.2.0](#whats-new-in-120)
+
+> An independent plugin for DeepSeek Harness, not an official DeepSeek mobile client. Version 1.x is browser-only. If you still rely on the old AI-HUB app, stay on `0.3.1` / `legacy/aihub`.
+
+## Why you might want it
+
+- **Continue a conversation** started on your computer, right from your phone.
+- **Start something new** with a workspace, model, reasoning effort and session mode of your choice.
+- **Keep work moving** with to-dos, tool progress, questions and approval prompts.
+- **Bring context along** with photos, camera capture, pasted images and other files.
+- **Find your sessions** in the left drawer: recent, archived, search and workspace switching.
+- **See what connected** with recent request times and honest status — an old pairing is not presented as an active connection.
+
+It is a phone-friendly task interface, not a miniature desktop IDE. Terminals, plugin management and advanced file work stay on your computer.
+
+## Install and connect
+
+### What you need
+
+- DeepSeek Harness **0.2.x** on your computer, with Node.js **22.19+**.
+- A phone browser. Nothing to install on the phone.
+- For the simplest setup, connect the phone and computer to the same Wi-Fi.
+
+### Install the plugin
+
+**In DSH (recommended):** open **Settings → Plugin Marketplace**, search for **dsh-roam**, install it and restart DSH.
+
+**Or use the command line:**
+
+```bash
+dsh plugin --profile web add dsh-roam@1.2.0
+```
+
+Then open **Settings → Connect Phone**.
+
+![Connect Phone settings on the computer](docs/images/connect-phone.png)
+
+### Pair your phone
+
+1. Choose **Same Wi-Fi**.
+2. Scan the QR code with your phone camera.
+3. Type your first request on the new-task home screen and send it to create a session.
+4. To continue earlier work, tap **☰** in the top-left corner and choose a session in the drawer.
+
+The QR token is single-use and valid for five minutes. If it expires or has already been used, select **New QR code**.
+
+![New task home on a phone](docs/images/mobile-home.png)
+
+Public connections ask for the **6-digit pairing password** shown in the panel. Browser sessions live in memory only, so pairing again is required after the plugin or DSH restarts. Old connections are intentionally not kept alive indefinitely.
+
+## Connection options
+
+| Your situation | Recommended option |
+| --- | --- |
+| Phone and computer on the same Wi-Fi | **Same Wi-Fi** — the easiest setup |
+| Away temporarily, without a domain | Enable the temporary tunnel in **Advanced Settings → Network Configuration**. Cloudflare is tried first, with Pinggy as fallback |
+| A domain of your own for long-term use | Configure a fixed domain with frpc / SakuraFrp and request a certificate |
+
+**A domain is not required.** A temporary tunnel needs neither a purchased domain nor a fixed public IP. Its address can change each time it starts, so scan the new QR code when needed. For a stable long-term address, use your own domain.
+
+Fixed domains support HTTPS and Let's Encrypt certificate issuance/renewal. See [Connection and security](#connection-and-security) for the boundaries and local data locations.
+
+## What is new in 1.2.0
+
+**This release makes the phone feel like a workspace you can actually pick up and use.**
+
+- A clean new-task home screen, without recent sessions taking over the first view.
+- A shared left drawer for workspaces, recent conversations, archives and search.
+- A proper mobile chat experience with a visible back button, clear session status and a comfortable bottom composer.
+- Better small details: keyboard and focus behavior, overlay navigation, streaming message nodes, reading anchors, slow-request isolation, and drafts/attachments that survive a failed send.
+- A new **Connected devices** card with active pairing counts, recent request times and honest disconnected/idle states.
+- A friendlier bilingual README with real mobile and settings screenshots, clearer installation and connection guidance.
+
+See the [1.2.0 release notes](docs/releases/v1.2.0.md) for compatibility notes and validation.
+
+## Connection and security
+
+- Management routes accept loopback requests only and validate Host and same-origin rules.
+- Pairing tokens are single-use and time-limited. Public access requires a 6-digit PIN and rate-limits repeated failures.
+- Only server-issued browser cookies are accepted; an IP address alone never grants access.
+- Changing the pairing PIN immediately revokes connected browser sessions.
+- **There is no application-layer end-to-end encryption.** Public TLS terminates at Cloudflare, Pinggy, frps or your reverse proxy, whose operator could theoretically read session traffic. For sensitive work, use infrastructure you control or stay on a trusted LAN.
+
+Settings, PIN state and certificate data live in `%USERPROFILE%\.dsh\dsh-roam` (override with `DSH_HOME`). There is no telemetry or plugin account system. External connections are used only for temporary tunnels and certificate operations.
+
+## Development and release
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+pnpm test
+pnpm test:browser
+npm pack --dry-run
+```
+
+Read [AGENTS.md](AGENTS.md) and [RELEASING.md](RELEASING.md) before contributing. Source lives in `src/`; generated files in `lib/` should not be edited by hand.
+
+Validation currently includes 228 passing Node tests across 21 files and 24 passing real-Chrome mobile interaction cases. Full physical Android/iOS, Safari, Firefox and real desktop-Host regression is still needed; mobile emulation is not a substitute for device testing.
+
+- [npm package](https://www.npmjs.com/package/dsh-roam)
+- [GitHub Releases](https://github.com/winlin926/dsh-roam/releases)
+- [Changelog](CHANGELOG.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+MIT License, Copyright (c) 2026 winlin926.
